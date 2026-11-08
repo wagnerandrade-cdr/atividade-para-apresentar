@@ -1,0 +1,7 @@
+# Chaves privadas criadas durante o provisionamento
+keys/
+
+# Estado local do Vagrant e arquivos temporarios do Ansible
+.vagrant/
+*.retry
+

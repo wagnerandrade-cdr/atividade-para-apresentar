@@ -2,6 +2,8 @@
 - name: Configuração do Servidor de Aplicação (app)
   hosts: all
   become: true
+  vars:
+    ip_arq: 192.168.56.104
 
   tasks:
     # ─── 1. Apache ───
@@ -20,24 +22,28 @@
     - name: Criar o arquivo index.html com os dados do projeto
       copy:
         dest: /var/www/html/index.html
+        owner: root
+        group: root
+        mode: "0644"
         content: |
-          <!DOCTYPE html>
-          <html>
+          <!doctype html>
+          <html lang="pt-BR">
           <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
               <title>Projeto DevOps - IFPB</title>
           </head>
           <body>
               <h1>Projeto 01 - DevOps com Vagrant e Ansible</h1>
               <p><strong>Disciplina:</strong> Administração de Sistemas Abertos</p>
-              <p><strong>Professor:</strong> Leonidas Lima</p>
+              <p><strong>Professor:</strong> Leonidas Francisco de Lima Junior</p>
               <p><strong>Integrantes:</strong></p>
               <ul>
-                  <li>Wagner - Matrícula: 04</li>
-                  <li>Wilson - Matrícula: XX</li>
+                  <li>Wagner Marinho de Andrade Filho - Matrícula: 20242380004</li>
+                  <li>Wilson Fillipe do Nascimento Lima - Matrícula: 20251380021</li>
               </ul>
           </body>
           </html>
-        mode: '0644'
 
     # ─── 2. Autofs (NFS) ───
     - name: Instalar autofs
@@ -51,20 +57,34 @@
         state: directory
         mode: '0755'
 
-    - name: Configurar o auto.master
-      copy:
-        dest: /etc/auto.master
-        content: |
-          /var/nfs /etc/auto.nfs --timeout=60
-
     - name: Configurar o auto.nfs para montar a arq
       copy:
         dest: /etc/auto.nfs
+        owner: root
+        group: root
+        mode: "0644"
         content: |
-          dados -fstype=nfs4,rw 192.168.56.104:/dados/nfs
+          dados -fstype=nfs4,rw {{ ip_arq }}:/dados/nfs
+      notify: Reiniciar autofs
 
-    - name: Reiniciar o autofs
+    - name: Adicionar mapa NFS sem substituir os demais mapas
+      lineinfile:
+        path: /etc/auto.master
+        line: "/var/nfs /etc/auto.nfs --timeout=60"
+        state: present
+      notify: Reiniciar autofs
+
+    - name: Criar ponto de montagem do autofs
+      file:
+        path: /var/nfs
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+  handlers:
+    - name: Reiniciar autofs
       service:
         name: autofs
         state: restarted
-        enabled: yes
+        enabled: true

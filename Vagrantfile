@@ -2,10 +2,13 @@
 # vi: set ft=ruby :
 
 # ===== Dados do grupo =====
-MATRICULA = "04"
+MATRICULA_WAGNER = "20242380004"
+MATRICULA_WILSON = "20251380021"
+MATRICULA = MATRICULA_WAGNER[-2, 2]
 NOME1     = "wagner"
 NOME2     = "wilson"
 DOMINIO   = "#{NOME1}.#{NOME2}.devops"
+IP_ARQ    = "192.168.56.1#{MATRICULA}"
 
 Vagrant.configure("2") do |config|
   # ===== Configuração geral =====
@@ -32,7 +35,7 @@ Vagrant.configure("2") do |config|
   # ===== arq =====
   config.vm.define "arq" do |arq|
     arq.vm.hostname = "arq.#{DOMINIO}"
-    arq.vm.network :private_network, ip: "192.168.56.1#{MATRICULA}"
+    arq.vm.network :private_network, ip: IP_ARQ
 
     (0..2).each do |x|
       arq.vm.disk :disk, size: "10GB", name: "disk-#{x}"
@@ -57,6 +60,7 @@ Vagrant.configure("2") do |config|
   # ===== db =====
   config.vm.define "db" do |db|
     db.vm.hostname = "db.#{DOMINIO}"
+    # O DHCP deriva o endereco deste MAC dos dois ultimos digitos da matricula de Wilson.
     db.vm.network :private_network, mac: "0800273A00DB", type: "dhcp"
 
     db.vm.provision "ansible_geral", type: "ansible" do |ansible|
@@ -73,6 +77,7 @@ Vagrant.configure("2") do |config|
   # ===== app =====
   config.vm.define "app" do |app|
     app.vm.hostname = "app.#{DOMINIO}"
+    # O DHCP deriva o endereco deste MAC do ultimo digito de cada matricula, nessa ordem.
     app.vm.network :private_network, mac: "0800273A00A1", type: "dhcp"
 
     app.vm.provision "ansible_geral", type: "ansible" do |ansible|

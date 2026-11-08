@@ -10,13 +10,15 @@
     ntp_pool: "pool.ntp.br"
     timezone: "America/Recife"
     ssh_banner: "Acesso apenas para pessoas com autorização expressa!!!"
+    local_keys_dir: "{{ playbook_dir }}/../keys"
 
   tasks:
     # ─── 1. Atualizar o sistema ───
-    - name: apt update
+    - name: Atualizar cache e aplicar atualizacoes do sistema
       apt:
         update_cache: true
         cache_valid_time: 3600
+        upgrade: dist
 
     # ─── 2. Pacotes base ───
     - name: Instalar chrony, nfs-common e sudo
@@ -25,6 +27,7 @@
           - chrony
           - nfs-common
           - sudo
+          - openssh-server
         state: present
 
     # ─── 3. Timezone ───
@@ -105,6 +108,10 @@
           Banner /etc/ssh/banner_ifpb
       notify: restart ssh
 
+    - name: Validar configuracao do SSH antes do reinicio
+      command: /usr/sbin/sshd -t
+      changed_when: false
+
     # ─── 7. Chaves SSH ───
     - name: Garantir que o diretório .ssh exista
       file:
@@ -117,50 +124,46 @@
         - "{{ user1 }}"
         - "{{ user2 }}"
 
-    - name: Gerar par de chaves SSH para os usuários
+    - name: Criar diretorio local protegido para as chaves
+      file:
+        path: "{{ local_keys_dir }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Gerar chaves Ed25519 no controlador Ansible
       openssh_keypair:
-        path: "/home/{{ item }}/.ssh/id_ed25519"
+        path: "{{ local_keys_dir }}/{{ item }}_id_ed25519"
         type: ed25519
-        owner: "{{ item }}"
-        group: "{{ ifpb_group }}"
-        force: false
+        state: present
       loop:
         - "{{ user1 }}"
         - "{{ user2 }}"
-      register: chaves_geradas
+      delegate_to: localhost
+      become: false
+      run_once: true
 
     - name: Autorizar a chave pública no authorized_keys
       authorized_key:
-        user: "{{ item.item }}"
+        user: "{{ item }}"
         state: present
-        key: "{{ item.public_key }}"
-      loop: "{{ chaves_geradas.results }}"
+        key: "{{ lookup('file', local_keys_dir + '/' + item + '_id_ed25519.pub') }}"
+      loop:
+        - "{{ user1 }}"
+        - "{{ user2 }}"
 
     # ─── 8. Sudo ───
     - name: Permitir sudo ao grupo ifpb
       copy:
         dest: /etc/sudoers.d/ifpb
+        owner: root
+        group: root
         mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
         content: |
           %ifpb ALL=(ALL:ALL) ALL
-
-    # ─── 9. Exportar chaves privadas para o Host ───
-    - name: Criar diretório local para armazenar chaves no host
-      file:
-        path: "{{ playbook_dir }}/../keys"
-        state: directory
-        mode: '0700'
-      delegate_to: localhost
-      become: no
-
-    - name: Copiar as chaves privadas dos usuários para o host
-      fetch:
-        src: "/home/{{ item }}/.ssh/id_ed25519"
-        dest: "{{ playbook_dir }}/../keys/{{ inventory_hostname }}_{{ item }}_id_ed25519"
-        flat: yes
-      loop:
-        - "{{ user1 }}"
-        - "{{ user2 }}"
 
   handlers:
     - name: restart chrony
