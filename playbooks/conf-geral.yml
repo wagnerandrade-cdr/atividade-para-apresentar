@@ -1,0 +1,149 @@
+---
+- name: Configuração geral das VMs
+  hosts: all
+  become: true
+
+  vars:
+    ifpb_group: "ifpb"
+    user1: "wagner"
+    user2: "wilson"
+    ntp_pool: "pool.ntp.br"
+    timezone: "America/Recife"
+    ssh_banner: "Acesso apenas para pessoas com autorização expressa!!!"
+
+  tasks:
+    # ─── 1. Atualizar o sistema ───
+    - name: apt update
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    # (A task "apt upgrade" foi removida porque já foi feita manualmente)
+    # ─── 2. Pacotes base ───
+    - name: Instalar chrony, nfs-common e sudo
+      apt:
+        name:
+          - chrony
+          - nfs-common
+          - sudo
+        state: present
+
+    # ─── 3. Timezone ───
+    - name: Ajustar timezone
+      timezone:
+        name: "{{ timezone }}"
+
+    # ─── 4. chrony ───
+    - name: Desabilitar systemd-timesyncd (conflita com chrony)
+      systemd:
+        name: systemd-timesyncd
+        state: stopped
+        enabled: false
+        masked: true
+      failed_when: false
+
+    - name: Configurar chrony com pool.ntp.br
+      copy:
+        dest: /etc/chrony/chrony.conf
+        mode: "0644"
+        content: |
+          pool {{ ntp_pool }} iburst
+          driftfile /var/lib/chrony/chrony.drift
+          logdir /var/log/chrony
+          maxupdateskew 100.0
+          rtcsync
+          makestep 1 3
+      notify: restart chrony
+
+    - name: Habilitar chrony
+      service:
+        name: chrony
+        state: started
+        enabled: true
+
+    # ─── 5. Grupo ifpb + usuários ───
+    - name: Criar grupo ifpb
+      group:
+        name: "{{ ifpb_group }}"
+        state: present
+
+    - name: Criar usuários no grupo ifpb
+      user:
+        name: "{{ item }}"
+        groups: "{{ ifpb_group }}"
+        append: yes
+        shell: /bin/bash
+        create_home: true
+        state: present
+      loop:
+        - "{{ user1 }}"
+        - "{{ user2 }}"
+
+    # ─── 6. SSH ───
+    - name: Garantir diretório sshd_config.d
+      file:
+        path: /etc/ssh/sshd_config.d
+        state: directory
+        mode: "0755"
+
+    - name: Criar banner SSH
+      copy:
+        dest: /etc/ssh/banner_ifpb
+        mode: "0644"
+        content: |
+          {{ ssh_banner }}
+
+    - name: Configurar sshd (chaves, root, grupos, banner)
+      copy:
+        dest: /etc/ssh/sshd_config.d/99-ifpb.conf
+        mode: "0644"
+        content: |
+          PubkeyAuthentication yes
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PermitRootLogin no
+          AllowGroups vagrant ifpb
+          Banner /etc/ssh/banner_ifpb
+      notify: restart ssh
+
+    # ─── 7. Chaves SSH ───
+    - name: Garantir que o diretório .ssh exista
+      file:
+        path: "/home/{{ item }}/.ssh"
+        state: directory
+        owner: "{{ item }}"
+        group: "{{ ifpb_group }}"
+        mode: '0700'
+      loop:
+        - "{{ user1 }}"
+        - "{{ user2 }}"
+
+    - name: Gerar par de chaves SSH para os usuários
+      openssh_keypair:
+        path: "/home/{{ item }}/.ssh/id_ed25519"
+        type: ed25519
+        owner: "{{ item }}"
+        group: "{{ ifpb_group }}"
+        force: false
+      loop:
+        - "{{ user1 }}"
+        - "{{ user2 }}"
+      register: chaves_geradas
+    # ─── 8. Sudo ───
+    - name: Permitir sudo ao grupo ifpb
+      copy:
+        dest: /etc/sudoers.d/ifpb
+        mode: "0440"
+        content: |
+          %ifpb ALL=(ALL:ALL) ALL
+
+  handlers:
+    - name: restart chrony
+      service:
+        name: chrony
+        state: restarted
+
+    - name: restart ssh
+      service:
+        name: ssh
+        state: restarted

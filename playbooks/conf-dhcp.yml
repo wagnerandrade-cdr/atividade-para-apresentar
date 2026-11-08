@@ -1,0 +1,50 @@
+---
+- name: Instala e configura o servidor DHCP na máquina arq
+  hosts: all
+  become: true
+  tasks:
+    - name: Instalar o isc-dhcp-server
+      apt:
+        name: isc-dhcp-server
+        state: present
+        update_cache: true
+
+    - name: Configurar a interface de escuta
+      copy:
+        dest: /etc/default/isc-dhcp-server
+        content: |
+          INTERFACESv4="eth1"
+          INTERFACESv6=""
+
+    - name: Escrever o arquivo dhcpd.conf com as regras do projeto
+      copy:
+        dest: /etc/dhcp/dhcpd.conf
+        mode: "0644"
+        content: |
+          default-lease-time 180;
+          max-lease-time 3600;
+          authoritative;
+          option domain-name "wagner.wilson.devops";
+          
+          option domain-name-servers 192.168.56.104;
+
+          subnet 192.168.56.0 netmask 255.255.255.0 {
+            range 192.168.56.50 192.168.56.100;
+            option routers 192.168.56.1;
+          }
+
+          host db {
+            hardware ethernet 08:00:27:3A:00:DB;
+            fixed-address 192.168.56.122;
+          }
+
+          host app {
+            hardware ethernet 08:00:27:3A:00:A1;
+            fixed-address 192.168.56.124;
+          }
+
+    - name: Reiniciar e habilitar o isc-dhcp-server
+      service:
+        name: isc-dhcp-server
+        state: restarted
+        enabled: true

@@ -1,0 +1,48 @@
+---
+- name: Configuração do Banco de Dados (db)
+  hosts: all
+  become: true
+
+  tasks:
+    # ─── 1. MariaDB ───
+    - name: Instalar o servidor MariaDB
+      apt:
+        name: mariadb-server
+        state: present
+        update_cache: true
+
+    - name: Habilitar e iniciar o MariaDB
+      service:
+        name: mariadb
+        state: started
+        enabled: yes
+
+    # ─── 2. Autofs (NFS) ───
+    - name: Instalar autofs
+      apt:
+        name: autofs
+        state: present
+
+    - name: Criar o diretório /var/nfs
+      file:
+        path: /var/nfs
+        state: directory
+        mode: '0755'
+
+    - name: Configurar o auto.master
+      copy:
+        dest: /etc/auto.master
+        content: |
+          /var/nfs /etc/auto.nfs --timeout=60
+
+    - name: Configurar o auto.nfs para montar a arq
+      copy:
+        dest: /etc/auto.nfs
+        content: |
+          dados -fstype=nfs4,rw 192.168.56.104:/dados/nfs
+
+    - name: Reiniciar o autofs
+      service:
+        name: autofs
+        state: restarted
+        enabled: yes

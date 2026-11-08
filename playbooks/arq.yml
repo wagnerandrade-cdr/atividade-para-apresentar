@@ -1,0 +1,171 @@
+---
+- name: Configuração do Servidor de Arquivos (arq) - LVM, NFS e DNS
+  hosts: all
+  become: true
+
+  vars:
+    dominio: "wagner.wilson.devops"
+    ip_arq: "192.168.56.104"
+    ip_db: "192.168.56.121"   # Confirme se este é o IP do seu colega
+    ip_app: "192.168.56.124"  # Confirme se este é o IP combinado
+
+  tasks:
+    # ─── 1. LVM ───
+    - name: Instalar pacotes do LVM
+      apt:
+        name: lvm2
+        state: present
+        update_cache: true
+
+    - name: Forçar a limpeza dos discos
+      command: "wipefs -a -f {{ item }}"
+      loop:
+        - /dev/sdb
+        - /dev/sdc
+        - /dev/sdd
+      ignore_errors: yes
+
+    - name: Criar Physical Volume (PV) nos 3 discos (via comando)
+      command: "pvcreate -y -ff /dev/sdb /dev/sdc /dev/sdd"
+      ignore_errors: yes
+
+    - name: Criar Volume Group (VG) dados
+      command: "vgcreate dados /dev/sdb /dev/sdc /dev/sdd"
+      ignore_errors: yes
+
+    - name: Criar Logical Volume (LV) ifpb com 15GB
+      command: "lvcreate -y -n ifpb -L 15G dados"
+      ignore_errors: yes
+    - name: Formatar o LV ifpb com ext4
+      filesystem:
+        fstype: ext4
+        dev: /dev/dados/ifpb
+
+    - name: Criar o diretório /dados
+      file:
+        path: /dados
+        state: directory
+        mode: '0755'
+
+    - name: Montar o LV ifpb em /dados e adicionar ao fstab
+      mount:
+        path: /dados
+        src: /dev/dados/ifpb
+        fstype: ext4
+        opts: nofail
+        state: mounted
+    # ─── 2. NFS Server ───
+    - name: Instalar servidor NFS
+      apt:
+        name: nfs-kernel-server
+        state: present
+
+    - name: Criar o diretório /dados/nfs
+      file:
+        path: /dados/nfs
+        state: directory
+        mode: '0777'
+
+    - name: Criar o usuário nfs-ifpb sem shell
+      user:
+        name: nfs-ifpb
+        shell: /usr/sbin/nologin
+        system: yes
+        create_home: no
+        state: present
+
+    - name: Ajustar dono e permissões do diretório /dados/nfs
+      file:
+        path: /dados/nfs
+        state: directory
+        owner: nfs-ifpb
+        group: nfs-ifpb
+        mode: '0777'
+
+    - name: Configurar o /etc/exports
+      copy:
+        dest: /etc/exports
+        content: |
+          /dados/nfs 192.168.56.0/24(rw,sync,no_subtree_check,no_root_squash)
+      notify: restart nfs
+    # ─── 3. DNS Server (Bind9) ───
+    - name: Instalar Bind9
+      apt:
+        name: bind9
+        state: present
+
+    - name: Configurar named.conf.options
+      copy:
+        dest: /etc/bind/named.conf.options
+        content: |
+          options {
+              directory "/var/cache/bind";
+              recursion yes;
+              allow-recursion { 192.168.56.0/24; };
+              forwarders { 1.1.1.1; 8.8.8.8; };
+              dnssec-validation auto;
+              listen-on-v6 { any; };
+          };
+
+    - name: Configurar named.conf.local (Zonas)
+      copy:
+        dest: /etc/bind/named.conf.local
+        content: |
+          zone "{{ dominio }}" {
+              type master;
+              file "/etc/bind/db.{{ dominio }}";
+          };
+
+          zone "56.168.192.in-addr.arpa" {
+              type master;
+              file "/etc/bind/db.192.168.56";
+          };
+
+    - name: Criar zona direta (db.{{ dominio }})
+      copy:
+        dest: "/etc/bind/db.{{ dominio }}"
+        content: |
+          $TTL    604800
+          @       IN      SOA     ns.{{ dominio }}. root.{{ dominio }}. (
+                                        2         ; Serial
+                                   604800         ; Refresh
+                                    86400         ; Retry
+                                  2419200         ; Expire
+                                   604800 )       ; Negative Cache TTL
+          ;
+          @       IN      NS      ns.{{ dominio }}.
+          @       IN      A       {{ ip_arq }}
+          ns      IN      A       {{ ip_arq }}
+          arq     IN      A       {{ ip_arq }}
+          db      IN      A       {{ ip_db }}
+          app     IN      A       {{ ip_app }}
+
+    - name: Criar zona reversa (db.192.168.56)
+      copy:
+        dest: "/etc/bind/db.192.168.56"
+        content: |
+          $TTL    604800
+          @       IN      SOA     ns.{{ dominio }}. root.{{ dominio }}. (
+                                        2         ; Serial
+                                   604800         ; Refresh
+                                    86400         ; Retry
+                                  2419200         ; Expire
+                                   604800 )       ; Negative Cache TTL
+          ;
+          @       IN      NS      ns.{{ dominio }}.
+          104     IN      PTR     arq.{{ dominio }}.
+          122     IN      PTR     db.{{ dominio }}.
+          124     IN      PTR     app.{{ dominio }}.
+
+    - name: Reiniciar o Bind9
+      service:
+        name: named
+        state: restarted
+        enabled: yes
+
+  handlers:
+    - name: restart nfs
+      service:
+        name: nfs-kernel-server
+        state: restarted
+
