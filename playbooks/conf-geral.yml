@@ -18,7 +18,6 @@
         update_cache: true
         cache_valid_time: 3600
 
-    # (A task "apt upgrade" foi removida porque já foi feita manualmente)
     # ─── 2. Pacotes base ───
     - name: Instalar chrony, nfs-common e sudo
       apt:
@@ -129,6 +128,14 @@
         - "{{ user1 }}"
         - "{{ user2 }}"
       register: chaves_geradas
+
+    - name: Autorizar a chave pública no authorized_keys
+      authorized_key:
+        user: "{{ item.item }}"
+        state: present
+        key: "{{ item.public_key }}"
+      loop: "{{ chaves_geradas.results }}"
+
     # ─── 8. Sudo ───
     - name: Permitir sudo ao grupo ifpb
       copy:
@@ -136,6 +143,24 @@
         mode: "0440"
         content: |
           %ifpb ALL=(ALL:ALL) ALL
+
+    # ─── 9. Exportar chaves privadas para o Host ───
+    - name: Criar diretório local para armazenar chaves no host
+      file:
+        path: "{{ playbook_dir }}/../keys"
+        state: directory
+        mode: '0700'
+      delegate_to: localhost
+      become: no
+
+    - name: Copiar as chaves privadas dos usuários para o host
+      fetch:
+        src: "/home/{{ item }}/.ssh/id_ed25519"
+        dest: "{{ playbook_dir }}/../keys/{{ inventory_hostname }}_{{ item }}_id_ed25519"
+        flat: yes
+      loop:
+        - "{{ user1 }}"
+        - "{{ user2 }}"
 
   handlers:
     - name: restart chrony
