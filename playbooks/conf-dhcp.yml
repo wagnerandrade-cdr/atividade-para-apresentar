@@ -33,7 +33,6 @@
         owner: root
         group: root
         mode: "0644"
-        validate: /usr/sbin/dhcpd -t -cf %s
         content: |
           default-lease-time 180;
           max-lease-time 3600;
@@ -58,6 +57,10 @@
           }
 
       notify: Reiniciar DHCP
+
+    - name: Validar configuracao DHCP instalada antes de reiniciar
+      command: /usr/sbin/dhcpd -t -cf /etc/dhcp/dhcpd.conf
+      changed_when: false
 
   handlers:
     - name: Reiniciar DHCP
