@@ -6,8 +6,8 @@
   vars:
     dominio: "wagner.wilson.devops"
     ip_arq: "192.168.56.104"
-    ip_db: "192.168.56.121"   # Confirme se este é o IP do seu colega
-    ip_app: "192.168.56.124"  # Confirme se este é o IP combinado
+    ip_db: "192.168.56.121"   
+    ip_app: "192.168.56.124"  
 
   tasks:
     # ─── 1. LVM ───
