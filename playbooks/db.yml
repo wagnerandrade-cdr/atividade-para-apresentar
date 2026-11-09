@@ -12,6 +12,10 @@
         name: mariadb-server
         state: present
         update_cache: true
+      register: apt_result
+      until: apt_result is succeeded
+      retries: 4
+      delay: 15
 
     - name: Habilitar e iniciar o MariaDB
       service:
@@ -24,6 +28,10 @@
       apt:
         name: autofs
         state: present
+      register: apt_result
+      until: apt_result is succeeded
+      retries: 4
+      delay: 15
 
     - name: Criar o diretório /var/nfs
       file:

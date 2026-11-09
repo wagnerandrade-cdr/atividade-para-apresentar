@@ -15,6 +15,10 @@
           - autofs
         state: present
         update_cache: true
+      register: apt_result
+      until: apt_result is succeeded
+      retries: 4
+      delay: 15
 
     # ─── 2. SSH X11 Forwarding ───
     - name: Permitir exportação X11 no SSH

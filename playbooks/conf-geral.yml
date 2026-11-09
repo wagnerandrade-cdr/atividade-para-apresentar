@@ -19,6 +19,10 @@
         update_cache: true
         cache_valid_time: 3600
         upgrade: dist
+      register: apt_result
+      until: apt_result is succeeded
+      retries: 4
+      delay: 15
 
     # ─── 2. Pacotes base ───
     - name: Instalar chrony, nfs-common e sudo
@@ -29,6 +33,10 @@
           - sudo
           - openssh-server
         state: present
+      register: apt_result
+      until: apt_result is succeeded
+      retries: 4
+      delay: 15
 
     # ─── 3. Timezone ───
     - name: Ajustar timezone

@@ -15,6 +15,10 @@
         name: isc-dhcp-server
         state: present
         update_cache: true
+      register: apt_result
+      until: apt_result is succeeded
+      retries: 4
+      delay: 15
 
     - name: Configurar a interface de escuta
       copy:

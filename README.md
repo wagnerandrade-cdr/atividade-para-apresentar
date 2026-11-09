@@ -41,7 +41,7 @@ Os endereços estáticos seguem as matrículas: `arq` usa os dois últimos dígi
 | Vagrant: provisionamento automático | Cada VM tem provisionadores Ansible comuns e específicos. | Executar `vagrant up` até terminar sem falhas e mostrar `vagrant status`. A definição dos provisionadores existe; a execução bem-sucedida precisa ser demonstrada. |
 | Ansible: organização | Os playbooks estão separados por configuração comum, DHCP, servidor de arquivos, banco, aplicação e cliente. `requirements.yml` declara as collections. | Mostrar `playbooks/`, `Vagrantfile` e executar `ansible-inventory --graph`. |
 | Ansible: escopo funcional | Os playbooks configuram DHCP, DNS, LVM, NFS, MariaDB, Apache, Autofs, Chrony, SSH e sudo. | Executar os comandos da seção [Testes](#testes-da-infraestrutura) e mostrar os resultados nos respectivos servidores. |
-| Ansible: execução sem erros | O playbook DHCP valida `/etc/dhcp/dhcpd.conf` instalado antes de reiniciar o serviço. Isso evita o erro anterior de permissão no arquivo temporário do Ansible. | Reexecutar `vagrant provision arq` e confirmar que a validação DHCP, o restart e os outros playbooks terminam sem falhas. Não considerar o critério comprovado até essa execução concluir. |
+| Ansible: execução sem erros | O playbook DHCP valida `/etc/dhcp/dhcpd.conf` instalado antes de reiniciar o serviço. As tarefas APT também repetem tentativas para tolerar falhas temporárias de rede. | Reexecutar `vagrant provision` e confirmar que as VMs e os serviços terminam sem falhas. Não considerar o critério comprovado até essa execução concluir. |
 | Acesso por nomes | O DNS tem registros para `arq`, `db` e `app`; clientes recebem o IP do DNS pelo DHCP. | Testar `getent hosts` nas VMs. No computador hospedeiro, consultar o DNS diretamente ou configurar a resolução do adaptador privado; o Vagrant não altera automaticamente o DNS do hospedeiro. |
 | Documentação e entregáveis | Este README identifica a equipe, disciplina e professor e descreve execução e validação. O repositório contém Vagrantfile, inventário, configuração e playbooks. | Mostrar o README e os arquivos listados na seção [Arquivos do projeto](#arquivos-do-projeto). |
 
@@ -89,6 +89,8 @@ Para repetir o provisionamento após uma falha ou alteração:
 ```bash
 vagrant provision
 ```
+
+As tarefas APT tentam novamente até quatro vezes, com intervalo de 15 segundos entre tentativas. Se a conexão cair por pouco tempo durante o update ou a instalação, o playbook tenta se recuperar. Se a rede continuar indisponível, restabeleça a conexão e execute `vagrant provision`; não é necessário entrar nas VMs para rodar `apt update` manualmente.
 
 Também é possível administrar as VMs com:
 
