@@ -1,80 +1,134 @@
-# Projeto 01 — DevOps com Vagrant e Ansible (versão revisada)
+# Projeto DevOps — Vagrant e Ansible
 
-Instituição: IFPB — Administração de Sistemas Abertos — Professor Leonidas Francisco de Lima Junior.
+## 1. Sobre o projeto
 
-Equipe: Wagner Marinho de Andrade Filho (20242380004) e Wilson Fillipe do Nascimento Lima (20251380021).
+Projeto desenvolvido para a disciplina **Administração de Sistemas Abertos**, do IFPB, sob orientação do professor Leonidas Francisco de Lima Junior.
 
-## Estrutura e endereçamento
+**Integrantes:**
+- Wagner Marinho de Andrade Filho — 20242380004
+- Wilson Fillipe do Nascimento Lima — 20251380021
 
-- `arq.wagner.wilson.devops`: 192.168.56.104 (IP estático, DHCP, Bind9, LVM, NFS)
-- `db.wagner.wilson.devops`: 192.168.56.121 (reserva DHCP por MAC, MariaDB, Autofs)
-- `app.wagner.wilson.devops`: 192.168.56.141 (reserva DHCP por MAC, Apache, Autofs)
-- `cli.wagner.wilson.devops`: DHCP dinâmico de 192.168.56.50–100 (Firefox ESR, X11, Autofs)
+O objetivo é criar uma infraestrutura Linux automatizada utilizando **Vagrant, VirtualBox e Ansible**, aplicando conceitos de DevOps e Infraestrutura como Código (IaC).
 
-O notebook Linux é o **hospedeiro/controlador**: ele cria as chaves privadas. As VMs recebem somente as chaves públicas em `/home/wagner/.ssh/authorized_keys` e `/home/wilson/.ssh/authorized_keys`.
+## 2. Infraestrutura
 
-## Preparação no notebook Linux
+Foram configuradas quatro máquinas virtuais Debian 12 na rede `192.168.56.0/24`.
 
-Instale VirtualBox, Vagrant, Ansible, OpenSSH, Python3 e plugins/collections compatíveis com sua distribuição. Na pasta do projeto:
+| Máquina | IP | Serviços |
+|---|---|---|
+| arq | 192.168.56.104 | DHCP, DNS, LVM e NFS |
+| db | 192.168.56.121 | MariaDB e Autofs |
+| app | 192.168.56.141 | Apache2 e Autofs |
+| cli | DHCP (.50–.100) | Firefox, X11 e Autofs |
+
+O Vagrant cria as máquinas virtuais e configura seus recursos. O Ansible automatiza a instalação de serviços, usuários, permissões, SSH e sincronização de horário com Chrony.
+
+O servidor `arq` fornece DHCP e DNS, além de compartilhar arquivos via NFS. Os demais servidores acessam esse compartilhamento automaticamente utilizando Autofs.
+
+## 3. Segurança SSH
+
+O acesso remoto utiliza autenticação por chaves SSH:
+
+1. As chaves são geradas no notebook Linux com `preparar-chaves.sh`.
+2. As chaves privadas permanecem no notebook.
+3. O Ansible copia as chaves públicas para o `authorized_keys` dos usuários nas VMs.
+4. O SSH valida as chaves e permite o acesso sem senha de login.
+
+Também foram configurados o bloqueio de root e da autenticação por senha, acesso restrito aos grupos `vagrant` e `ifpb` e permissões sudo para o grupo `ifpb`.
+
+## 4. Instalação e execução
+
+**Pré-requisitos:** Linux, VirtualBox, Vagrant, Ansible, Python 3 e OpenSSH.
+
+Na pasta principal do projeto, execute:
+
+**1. Instalar as dependências do Ansible:**
 
 ```bash
 ansible-galaxy collection install -r requirements.yml
+```
+
+**2. Gerar as chaves SSH:**
+
+```bash
+chmod +x preparar-chaves.sh
 ./preparar-chaves.sh
+```
+
+**3. Validar e iniciar as máquinas:**
+
+```bash
 vagrant validate
 vagrant up arq
 vagrant up db app cli
 vagrant status
 ```
 
-**Importante:** se o VirtualBox estiver servindo DHCP na rede host-only `vboxnet0`, desative-o para evitar dois servidores concorrentes. O Vagrantfile contém um gatilho que tenta pará-lo, mas usa `|| true`: ele não prova que o serviço foi desligado. Confirme com `VBoxManage list dhcpservers`. O nome da interface pode variar no notebook. A interface privada da VM `arq` foi definida como `eth1`; confira com `vagrant ssh arq -c 'ip -br a'`.
+Antes de iniciar, confirme que o DHCP do VirtualBox está desativado na rede privada utilizada pelo projeto:
 
-O `vagrant up arq` primeiro cria o servidor DHCP e, em seguida, os demais serviços. As outras VMs recebem IP pela rede host-only. Depois da primeira criação, para reaplicar alterações use `vagrant provision arq`, etc. **Não execute `vagrant destroy` nem reaproveite os três discos de LVM se contiverem dados importantes.**
+```bash
+VBoxManage list dhcpservers
+```
 
-## Autenticação SSH e script do professor
+**4. Acessar uma máquina:**
 
-As chaves são geradas uma vez no notebook real em `keys/wagner` e `keys/wilson` (privadas) e `keys/wagner.pub` e `keys/wilson.pub` (públicas). Nunca publique as privadas no Git. A configuração comum distribui **somente as públicas** e bloqueia senha/root; sudo é NOPASSWD para `ifpb` a fim de permitir testes automatizados.
+```bash
+vagrant ssh arq
+```
 
-Do notebook Linux:
+Ou com a chave SSH:
 
 ```bash
 ssh -i keys/wagner wagner@192.168.56.104
-ssh -i keys/wilson wilson@192.168.56.141
 ```
 
-O script `verificar.py` deve ficar na **raiz deste projeto**, ao lado da pasta `keys/`. Use o arquivo enviado pelo professor, sem necessidade de editar. Ele exige DNS por hostname `arq/app/db/cli.wagner.wilson.devops` no notebook. O Bind9 fornece registros para arq, db e app; **não existe IP fixo para cli**, portanto obtenha seu IP com `vagrant ssh cli -c 'ip -4 -br address'` e configure a resolução no notebook (por DNS interno complementado por uma entrada de `/etc/hosts` para cli, ou outras configurações equivalentes). Para uma resolução imediata temporária, entradas no `/etc/hosts` do notebook para todos os quatro hosts também funcionam. Configure sem sobrescrever entradas existentes nem assumir que o IP DHCP de cli será permanente.
-
-Com o ambiente gráfico X11 ativo no notebook (não usar uma sessão headless), dentro da raiz do projeto:
+Para reexecutar as configurações após alterações:
 
 ```bash
-python3 verificar.py wagner.wilson |& tee resultado-verificacao.txt
+vagrant provision
 ```
 
-O verificador do professor cria **temporariamente** o usuário `intruso` e tenta removê-lo; ele também cria arquivos em `/var/nfs`. Inspecione erros antes de repetir. Seu teste de bloqueio de senhas pode produzir falsos positivos se um agente SSH ou outra chave padrão estiver disponível. Teste explícito: `ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password wagner@192.168.56.104` deve ser recusado.
+## 5. Testes de funcionamento
 
-O script usa chaves `keys/wagner` e `keys/wilson`, grava diretamente em `/var/nfs/usuario.txt` (por isso Autofs usa montagem direta) e tenta abrir Firefox por SSH com `-X`; este último requer um servidor X funcional no notebook. A montagem Autofs `/-` mapeia **/var/nfs** para o NFS do arq.
-
-## Verificações complementares (o script não cobre tudo)
+Verificar os principais serviços:
 
 ```bash
-vagrant status
-vagrant ssh arq -c 'sudo dhcpd -t -cf /etc/dhcp/dhcpd.conf'
-vagrant ssh arq -c 'sudo named-checkconf -z'
-vagrant ssh arq -c 'sudo pvs; sudo vgs; sudo lvs; findmnt /dados'
-vagrant ssh arq -c 'sudo exportfs -v'
-vagrant ssh db -c 'systemctl is-active mariadb'
-vagrant ssh app -c 'systemctl is-active apache2'
-vagrant ssh cli -c 'ls -la /var/nfs'
-vagrant ssh cli -c 'getent hosts app.wagner.wilson.devops'
-vagrant ssh db -c 'ip -4 -br addr'
-vagrant ssh app -c 'ip -4 -br addr'
+vagrant ssh arq -c "sudo pvs; sudo vgs; sudo lvs"
+vagrant ssh arq -c "sudo exportfs -v"
+vagrant ssh db -c "systemctl is-active mariadb"
+vagrant ssh app -c "systemctl is-active apache2"
+vagrant ssh cli -c "ls /var/nfs"
 ```
 
-Para verificar NFS: no notebook execute `vagrant ssh app -c 'sudo -u wilson sh -c "echo teste > /var/nfs/wilson.txt"'`; no `arq`, confirme `stat -c '%U:%G %n' /dados/nfs/wilson.txt` => `nfs-ifpb:nfs-ifpb`. Testar que um usuário sem autenticação no NFS não consegue escrever **não equivale** a testar a identidade local: `all_squash` faz o mapeamento de todos os usuários remotos autorizados para `nfs-ifpb`, como solicitado.
+Testar DNS e a página web:
 
-## Arquivos e avaliação
+```bash
+dig @192.168.56.104 app.wagner.wilson.devops
+curl http://192.168.56.141
+```
 
-`Vagrantfile`, `ansible.cfg`, `hosts.ini`, `requirements.yml`, `preparar-chaves.sh`, `playbooks/{conf-geral,conf-dhcp,arq,db,app,cli}.yml`. O trabalho cobre quatro VMs Debian Bookworm com linked clones, servidor arq com três discos adicionais de 10GB, VG dados, LV ifpb 15GB/ext4 em /dados, DHCP, Bind9, NFS, MariaDB, Apache, X11 e Autofs. A confirmação final exige executar os serviços no notebook Linux real; revisão estática não comprova o comportamento do VirtualBox, DHCP, encaminhamento X11 e montagem NFS.
+### Verificador do professor
 
-## Mudanças principais em relação à versão recebida
+Após configurar no notebook a resolução dos nomes `arq`, `app`, `db` e `cli` do domínio `wagner.wilson.devops`, execute na raiz do projeto:
 
-IP do app corrigido para `.141` em todos os componentes; registro PTR do db corrigido para `.121`; hosts.ini corrigido; chaves privadas nunca geradas nas VMs nem copiadas das VMs para o hospedeiro; módulos de LVM idempotentes sem `wipefs`; NFS com `all_squash`, `anonuid/anongid` e sem `no_root_squash`; Autofs montando diretamente em `/var/nfs`; página HTML com matrículas completas; sudo sem senha para o verificador.
+```bash
+python3 verificar.py wagner.wilson
+```
+
+Para salvar o resultado:
+
+```bash
+python3 verificar.py wagner.wilson 2>&1 | tee resultado-verificacao.txt
+```
+
+O script verifica SSH, usuários, Chrony, LVM, MariaDB, NFS e X11. Durante os testes, cria temporariamente um usuário `intruso` para conferir as restrições de acesso.
+
+## 6. Aplicações práticas
+
+O projeto demonstra a automação de servidores, gerenciamento de redes, compartilhamento de arquivos e segurança de acesso, conhecimentos aplicáveis em empresas, data centers, ambientes de desenvolvimento e infraestrutura em nuvem.
+
+**Conclusão:** a utilização conjunta de Vagrant e Ansible permite criar, configurar e reproduzir ambientes Linux de maneira padronizada, automatizada e segura.
+
+---
+
+**IFPB — Administração de Sistemas Abertos — 2026.2**
