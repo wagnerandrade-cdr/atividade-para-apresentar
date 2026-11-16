@@ -15,4 +15,4 @@ for usuario in wagner wilson; do
   chmod 600 "keys/$usuario"
   chmod 644 "keys/$usuario.pub"
 done
-echo 'Chaves criadas no notebook Linux. As privadas ficam SOMENTE em keys/ no notebook.'
+echo 'Chaves criadas no notebook Linux. As privadas ficam SOMENTE em keys/ no pc local.'
