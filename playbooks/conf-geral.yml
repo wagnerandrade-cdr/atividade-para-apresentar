@@ -1,26 +1,23 @@
-
 ---
 - name: Configuracao comum em todas as VMs
   hosts: all
   become: true
-
   vars:
     integrantes: [wagner, wilson]
-
   tasks:
-    - name: Atualizar cache de pacotes
+    - name: Atualizar cache e fazer upgrade do sistema
       ansible.builtin.apt:
         update_cache: true
+        upgrade: dist
         cache_valid_time: 3600
+      retries: 3
+      delay: 10
+      register: atualizacao
+      until: atualizacao is succeeded
 
     - name: Instalar pacotes comuns
       ansible.builtin.apt:
-        name:
-          - chrony
-          - nfs-common
-          - sudo
-          - openssh-server
-          - python3
+        name: [chrony, nfs-common, sudo, openssh-server, python3]
         state: present
 
     - name: Ajustar zona de tempo
@@ -52,33 +49,29 @@
 
     - name: Criar integrantes e incluir no grupo ifpb
       ansible.builtin.user:
-        name: "{{ item }}"
+        name: '{{ item }}'
         groups: ifpb
         append: true
         create_home: true
         shell: /bin/bash
-      loop: "{{ integrantes }}"
+      loop: '{{ integrantes }}'
 
     - name: Confirmar existencia de chaves publicas no computador controlador
       ansible.builtin.assert:
-        that:
-          - lookup('ansible.builtin.fileglob', playbook_dir + '/../keys/' + item + '.pub') | length > 0
-        fail_msg: >-
-          Falta keys/{{ item }}.pub.
-          Rode ./preparar-chaves.sh no notebook Linux
-          ANTES de provisionar.
-      loop: "{{ integrantes }}"
+        that: "lookup('ansible.builtin.fileglob', playbook_dir + '/../keys/' + item + '.pub') | length > 0"
+        fail_msg: 'Falta keys/{{ item }}.pub. Rode ./preparar-chaves.sh no notebook Linux ANTES de provisionar.'
+      loop: '{{ integrantes }}'
       delegate_to: localhost
       become: false
 
     - name: Instalar chave publica do notebook no authorized_keys remoto
       ansible.posix.authorized_key:
-        user: "{{ item }}"
+        user: '{{ item }}'
         key: "{{ lookup('ansible.builtin.file', playbook_dir + '/../keys/' + item + '.pub') }}"
         state: present
         exclusive: true
         manage_dir: true
-      loop: "{{ integrantes }}"
+      loop: '{{ integrantes }}'
 
     - name: Instalar mensagem de acesso SSH
       ansible.builtin.copy:
@@ -116,7 +109,6 @@
       ansible.builtin.service:
         name: chrony
         state: restarted
-
     - name: Recarregar SSH
       ansible.builtin.service:
         name: ssh
