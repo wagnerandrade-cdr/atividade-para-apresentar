@@ -29,8 +29,8 @@ O servidor `arq` fornece DHCP e DNS, além de compartilhar arquivos via NFS. Os 
 
 O acesso remoto utiliza autenticação por chaves SSH:
 
-1. As chaves são geradas no notebook Linux com `preparar-chaves.sh`.
-2. As chaves privadas permanecem no notebook.
+1. As chaves são geradas no pc local com `preparar-chaves.sh`.
+2. As chaves privadas permanecem no pc local.
 3. O Ansible copia as chaves públicas para o `authorized_keys` dos usuários nas VMs.
 4. O SSH valida as chaves e permite o acesso sem senha de login.
 
