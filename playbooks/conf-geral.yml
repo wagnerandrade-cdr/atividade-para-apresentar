@@ -1,101 +1,89 @@
 ---
-- name: Configuração geral das VMs
+- name: Configuracao comum em todas as VMs
   hosts: all
   become: true
-
   vars:
-    ifpb_group: "ifpb"
-    user1: "wagner"
-    user2: "wilson"
-    ntp_pool: "pool.ntp.br"
-    timezone: "America/Recife"
-    ssh_banner: "Acesso apenas para pessoas com autorização expressa!!!"
-
+    integrantes: [wagner, wilson]
   tasks:
-    # ─── 1. Atualizar o sistema ───
-    - name: apt update
-      apt:
+    - name: Atualizar cache e fazer upgrade do sistema
+      ansible.builtin.apt:
         update_cache: true
+        upgrade: dist
         cache_valid_time: 3600
+      retries: 3
+      delay: 10
+      register: atualizacao
+      until: atualizacao is succeeded
 
-    # ─── 2. Pacotes base ───
-    - name: Instalar chrony, nfs-common e sudo
-      apt:
-        name:
-          - chrony
-          - nfs-common
-          - sudo
+    - name: Instalar pacotes comuns
+      ansible.builtin.apt:
+        name: [chrony, nfs-common, sudo, openssh-server, python3]
         state: present
 
-    # ─── 3. Timezone ───
-    - name: Ajustar timezone
-      timezone:
-        name: "{{ timezone }}"
+    - name: Ajustar zona de tempo
+      community.general.timezone:
+        name: America/Recife
 
-    # ─── 4. chrony ───
-    - name: Desabilitar systemd-timesyncd (conflita com chrony)
-      systemd:
-        name: systemd-timesyncd
-        state: stopped
-        enabled: false
-        masked: true
-      failed_when: false
-
-    - name: Configurar chrony com pool.ntp.br
-      copy:
+    - name: Configurar o Chrony
+      ansible.builtin.copy:
         dest: /etc/chrony/chrony.conf
-        mode: "0644"
+        mode: '0644'
         content: |
-          pool {{ ntp_pool }} iburst
+          pool pool.ntp.br iburst
           driftfile /var/lib/chrony/chrony.drift
           logdir /var/log/chrony
-          maxupdateskew 100.0
-          rtcsync
           makestep 1 3
-      notify: restart chrony
+          rtcsync
+      notify: Reiniciar chrony
 
-    - name: Habilitar chrony
-      service:
+    - name: Garantir Chrony em execucao
+      ansible.builtin.service:
         name: chrony
         state: started
         enabled: true
 
-    # ─── 5. Grupo ifpb + usuários ───
     - name: Criar grupo ifpb
-      group:
-        name: "{{ ifpb_group }}"
+      ansible.builtin.group:
+        name: ifpb
         state: present
 
-    - name: Criar usuários no grupo ifpb
-      user:
-        name: "{{ item }}"
-        groups: "{{ ifpb_group }}"
-        append: yes
-        shell: /bin/bash
+    - name: Criar integrantes e incluir no grupo ifpb
+      ansible.builtin.user:
+        name: '{{ item }}'
+        groups: ifpb
+        append: true
         create_home: true
+        shell: /bin/bash
+      loop: '{{ integrantes }}'
+
+    - name: Confirmar existencia de chaves publicas no computador controlador
+      ansible.builtin.assert:
+        that: "lookup('ansible.builtin.fileglob', playbook_dir + '/../keys/' + item + '.pub') | length > 0"
+        fail_msg: 'Falta keys/{{ item }}.pub. Rode ./preparar-chaves.sh no notebook Linux ANTES de provisionar.'
+      loop: '{{ integrantes }}'
+      delegate_to: localhost
+      become: false
+
+    - name: Instalar chave publica do notebook no authorized_keys remoto
+      ansible.posix.authorized_key:
+        user: '{{ item }}'
+        key: "{{ lookup('ansible.builtin.file', playbook_dir + '/../keys/' + item + '.pub') }}"
         state: present
-      loop:
-        - "{{ user1 }}"
-        - "{{ user2 }}"
+        exclusive: true
+        manage_dir: true
+      loop: '{{ integrantes }}'
 
-    # ─── 6. SSH ───
-    - name: Garantir diretório sshd_config.d
-      file:
-        path: /etc/ssh/sshd_config.d
-        state: directory
-        mode: "0755"
-
-    - name: Criar banner SSH
-      copy:
+    - name: Instalar mensagem de acesso SSH
+      ansible.builtin.copy:
         dest: /etc/ssh/banner_ifpb
-        mode: "0644"
-        content: |
-          {{ ssh_banner }}
+        mode: '0644'
+        content: "Acesso apenas para pessoas com autorização expressa!!!\n"
+      notify: Recarregar SSH
 
-    - name: Configurar sshd (chaves, root, grupos, banner)
-      copy:
-        dest: /etc/ssh/sshd_config.d/99-ifpb.conf
-        mode: "0644"
+    - name: Restringir acesso SSH a chaves e grupos autorizados
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/01-ifpb.conf
+        mode: '0644'
         content: |
           PubkeyAuthentication yes
           PasswordAuthentication no
@@ -103,72 +91,25 @@
           PermitRootLogin no
           AllowGroups vagrant ifpb
           Banner /etc/ssh/banner_ifpb
-      notify: restart ssh
+      notify: Recarregar SSH
 
-    # ─── 7. Chaves SSH ───
-    - name: Garantir que o diretório .ssh exista
-      file:
-        path: "/home/{{ item }}/.ssh"
-        state: directory
-        owner: "{{ item }}"
-        group: "{{ ifpb_group }}"
-        mode: '0700'
-      loop:
-        - "{{ user1 }}"
-        - "{{ user2 }}"
-
-    - name: Gerar par de chaves SSH para os usuários
-      openssh_keypair:
-        path: "/home/{{ item }}/.ssh/id_ed25519"
-        type: ed25519
-        owner: "{{ item }}"
-        group: "{{ ifpb_group }}"
-        force: false
-      loop:
-        - "{{ user1 }}"
-        - "{{ user2 }}"
-      register: chaves_geradas
-
-    - name: Autorizar a chave pública no authorized_keys
-      authorized_key:
-        user: "{{ item.item }}"
-        state: present
-        key: "{{ item.public_key }}"
-      loop: "{{ chaves_geradas.results }}"
-
-    # ─── 8. Sudo ───
-    - name: Permitir sudo ao grupo ifpb
-      copy:
+    - name: Permitir sudo sem senha aos integrantes para testes automatizados
+      ansible.builtin.copy:
         dest: /etc/sudoers.d/ifpb
-        mode: "0440"
-        content: |
-          %ifpb ALL=(ALL:ALL) ALL
+        mode: '0440'
+        validate: '/usr/sbin/visudo -cf %s'
+        content: "%ifpb ALL=(ALL:ALL) NOPASSWD: ALL\n"
 
-    # ─── 9. Exportar chaves privadas para o Host ───
-    - name: Criar diretório local para armazenar chaves no host
-      file:
-        path: "{{ playbook_dir }}/../keys"
-        state: directory
-        mode: '0700'
-      delegate_to: localhost
-      become: no
-
-    - name: Copiar as chaves privadas dos usuários para o host
-      fetch:
-        src: "/home/{{ item }}/.ssh/id_ed25519"
-        dest: "{{ playbook_dir }}/../keys/{{ inventory_hostname }}_{{ item }}_id_ed25519"
-        flat: yes
-      loop:
-        - "{{ user1 }}"
-        - "{{ user2 }}"
+    - name: Verificar sintaxe SSH antes de aplicar
+      ansible.builtin.command: /usr/sbin/sshd -t
+      changed_when: false
 
   handlers:
-    - name: restart chrony
-      service:
+    - name: Reiniciar chrony
+      ansible.builtin.service:
         name: chrony
         state: restarted
-
-    - name: restart ssh
-      service:
+    - name: Recarregar SSH
+      ansible.builtin.service:
         name: ssh
-        state: restarted
+        state: reloaded

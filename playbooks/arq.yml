@@ -1,171 +1,178 @@
 ---
-- name: Configuração do Servidor de Arquivos (arq) - LVM, NFS e DNS
+- name: Servidor de arquivos - LVM, NFS e Bind9
   hosts: all
   become: true
-
   vars:
-    dominio: "wagner.wilson.devops"
-    ip_arq: "192.168.56.104"
-    ip_db: "192.168.56.121"   
-    ip_app: "192.168.56.124"  
-
+    dominio: wagner.wilson.devops
+    ip_arq: 192.168.56.104
+    ip_db: 192.168.56.121
+    ip_app: 192.168.56.141
   tasks:
-    # ─── 1. LVM ───
-    - name: Instalar pacotes do LVM
-      apt:
-        name: lvm2
+    - name: Instalar LVM, NFS e Bind9
+      ansible.builtin.apt:
+        name: [lvm2, nfs-kernel-server, bind9, bind9-utils]
         state: present
         update_cache: true
 
-    - name: Forçar a limpeza dos discos
-      command: "wipefs -a -f {{ item }}"
-      loop:
-        - /dev/sdb
-        - /dev/sdc
-        - /dev/sdd
-      ignore_errors: yes
+    - name: Conferir se os tres discos adicionais existem
+      ansible.builtin.stat:
+        path: '{{ item }}'
+      loop: [/dev/sdb, /dev/sdc, /dev/sdd]
+      register: discos
 
-    - name: Criar Physical Volume (PV) nos 3 discos (via comando)
-      command: "pvcreate -y -ff /dev/sdb /dev/sdc /dev/sdd"
-      ignore_errors: yes
+    - name: Impedir operacoes de LVM se faltar disco
+      ansible.builtin.assert:
+        that: 'item.stat.exists'
+        fail_msg: 'Disco {{ item.item }} ausente; verifique os discos Vagrant antes de continuar.'
+      loop: '{{ discos.results }}'
 
-    - name: Criar Volume Group (VG) dados
-      command: "vgcreate dados /dev/sdb /dev/sdc /dev/sdd"
-      ignore_errors: yes
+    # O lvg/lvol nao apaga assinaturas nem reformata um volume existente.
+    - name: Criar volume group dados nos tres discos
+      community.general.lvg:
+        vg: dados
+        pvs: /dev/sdb,/dev/sdc,/dev/sdd
+        state: present
 
-    - name: Criar Logical Volume (LV) ifpb com 15GB
-      command: "lvcreate -y -n ifpb -L 15G dados"
-      ignore_errors: yes
-    - name: Formatar o LV ifpb com ext4
-      filesystem:
+    - name: Criar volume logico ifpb com 15 GB
+      community.general.lvol:
+        vg: dados
+        lv: ifpb
+        size: 15g
+        state: present
+        shrink: false
+
+    - name: Formatar volume com ext4 apenas se necessario
+      community.general.filesystem:
         fstype: ext4
         dev: /dev/dados/ifpb
+        force: false
 
-    - name: Criar o diretório /dados
-      file:
+    - name: Garantir diretorio de montagem
+      ansible.builtin.file:
         path: /dados
         state: directory
         mode: '0755'
 
-    - name: Montar o LV ifpb em /dados e adicionar ao fstab
-      mount:
+    - name: Montar /dados permanentemente
+      ansible.posix.mount:
         path: /dados
         src: /dev/dados/ifpb
         fstype: ext4
-        opts: nofail
+        opts: defaults
         state: mounted
-    # ─── 2. NFS Server ───
-    - name: Instalar servidor NFS
-      apt:
-        name: nfs-kernel-server
-        state: present
 
-    - name: Criar o diretório /dados/nfs
-      file:
-        path: /dados/nfs
-        state: directory
-        mode: '0777'
-
-    - name: Criar o usuário nfs-ifpb sem shell
-      user:
+    - name: Criar usuario de servico NFS sem shell
+      ansible.builtin.user:
         name: nfs-ifpb
+        system: true
         shell: /usr/sbin/nologin
-        system: yes
-        create_home: no
-        state: present
+        create_home: false
 
-    - name: Ajustar dono e permissões do diretório /dados/nfs
-      file:
+    - name: Descobrir UID de nfs-ifpb
+      ansible.builtin.command: id -u nfs-ifpb
+      register: nfs_uid
+      changed_when: false
+
+    - name: Descobrir GID de nfs-ifpb
+      ansible.builtin.command: id -g nfs-ifpb
+      register: nfs_gid
+      changed_when: false
+
+    - name: Criar NFS somente com escrita pelo usuario nfs-ifpb
+      ansible.builtin.file:
         path: /dados/nfs
         state: directory
         owner: nfs-ifpb
         group: nfs-ifpb
-        mode: '0777'
+        mode: '0700'
 
-    - name: Configurar o /etc/exports
-      copy:
+    - name: Exportar NFS para rede privada mapeando todos os usuarios
+      ansible.builtin.copy:
         dest: /etc/exports
+        mode: '0644'
         content: |
-          /dados/nfs 192.168.56.0/24(rw,sync,no_subtree_check,no_root_squash)
-      notify: restart nfs
-    # ─── 3. DNS Server (Bind9) ───
-    - name: Instalar Bind9
-      apt:
-        name: bind9
-        state: present
+          /dados/nfs 192.168.56.0/24(rw,sync,no_subtree_check,all_squash,anonuid={{ nfs_uid.stdout }},anongid={{ nfs_gid.stdout }})
+      notify: Reexportar NFS
 
-    - name: Configurar named.conf.options
-      copy:
+    - name: Habilitar NFS
+      ansible.builtin.service:
+        name: nfs-kernel-server
+        state: started
+        enabled: true
+
+    - name: Configurar Bind9 para rede interna
+      ansible.builtin.copy:
         dest: /etc/bind/named.conf.options
+        mode: '0644'
         content: |
           options {
-              directory "/var/cache/bind";
-              recursion yes;
-              allow-recursion { 192.168.56.0/24; };
-              forwarders { 1.1.1.1; 8.8.8.8; };
-              dnssec-validation auto;
-              listen-on-v6 { any; };
+            directory "/var/cache/bind";
+            recursion yes;
+            allow-query { localhost; 192.168.56.0/24; };
+            allow-recursion { localhost; 192.168.56.0/24; };
+            listen-on { any; };
+            listen-on-v6 { any; };
+            forwarders { 1.1.1.1; 8.8.8.8; };
+            dnssec-validation auto;
           };
+      notify: Reiniciar Bind9
 
-    - name: Configurar named.conf.local (Zonas)
-      copy:
+    - name: Configurar zonas direta e reversa
+      ansible.builtin.copy:
         dest: /etc/bind/named.conf.local
+        mode: '0644'
         content: |
           zone "{{ dominio }}" {
-              type master;
-              file "/etc/bind/db.{{ dominio }}";
+            type master;
+            file "/etc/bind/db.{{ dominio }}";
           };
-
           zone "56.168.192.in-addr.arpa" {
-              type master;
-              file "/etc/bind/db.192.168.56";
+            type master;
+            file "/etc/bind/db.192.168.56";
           };
+      notify: Reiniciar Bind9
 
-    - name: Criar zona direta (db.{{ dominio }})
-      copy:
-        dest: "/etc/bind/db.{{ dominio }}"
+    - name: Criar zona DNS direta
+      ansible.builtin.copy:
+        dest: '/etc/bind/db.{{ dominio }}'
+        mode: '0644'
         content: |
-          $TTL    604800
-          @       IN      SOA     ns.{{ dominio }}. root.{{ dominio }}. (
-                                        2         ; Serial
-                                   604800         ; Refresh
-                                    86400         ; Retry
-                                  2419200         ; Expire
-                                   604800 )       ; Negative Cache TTL
-          ;
-          @       IN      NS      ns.{{ dominio }}.
-          @       IN      A       {{ ip_arq }}
-          ns      IN      A       {{ ip_arq }}
-          arq     IN      A       {{ ip_arq }}
-          db      IN      A       {{ ip_db }}
-          app     IN      A       {{ ip_app }}
+          $TTL 3600
+          @ IN SOA ns.{{ dominio }}. admin.{{ dominio }}. ( 2026111501 3600 900 1209600 3600 )
+          @ IN NS ns.{{ dominio }}.
+          ns IN A {{ ip_arq }}
+          arq IN A {{ ip_arq }}
+          db IN A {{ ip_db }}
+          app IN A {{ ip_app }}
+      notify: Reiniciar Bind9
 
-    - name: Criar zona reversa (db.192.168.56)
-      copy:
-        dest: "/etc/bind/db.192.168.56"
+    - name: Criar zona DNS reversa
+      ansible.builtin.copy:
+        dest: /etc/bind/db.192.168.56
+        mode: '0644'
         content: |
-          $TTL    604800
-          @       IN      SOA     ns.{{ dominio }}. root.{{ dominio }}. (
-                                        2         ; Serial
-                                   604800         ; Refresh
-                                    86400         ; Retry
-                                  2419200         ; Expire
-                                   604800 )       ; Negative Cache TTL
-          ;
-          @       IN      NS      ns.{{ dominio }}.
-          104     IN      PTR     arq.{{ dominio }}.
-          122     IN      PTR     db.{{ dominio }}.
-          124     IN      PTR     app.{{ dominio }}.
+          $TTL 3600
+          @ IN SOA ns.{{ dominio }}. admin.{{ dominio }}. ( 2026111501 3600 900 1209600 3600 )
+          @ IN NS ns.{{ dominio }}.
+          104 IN PTR arq.{{ dominio }}.
+          121 IN PTR db.{{ dominio }}.
+          141 IN PTR app.{{ dominio }}.
+      notify: Reiniciar Bind9
 
-    - name: Reiniciar o Bind9
-      service:
+    - name: Validar configuracao Bind9
+      ansible.builtin.command: named-checkconf -z
+      changed_when: false
+
+    - name: Habilitar Bind9
+      ansible.builtin.service:
         name: named
-        state: restarted
-        enabled: yes
+        state: started
+        enabled: true
 
   handlers:
-    - name: restart nfs
-      service:
-        name: nfs-kernel-server
+    - name: Reexportar NFS
+      ansible.builtin.command: exportfs -ra
+    - name: Reiniciar Bind9
+      ansible.builtin.service:
+        name: named
         state: restarted
-

@@ -1,67 +1,42 @@
 ---
-- name: Configuração do Host Cliente (cli)
+- name: Cliente cli - Firefox, X11 e NFS por autofs
   hosts: all
   become: true
-
   tasks:
-    # ─── 1. Pacotes X11 ───
-    - name: Instalar firefox-esr e xauth
-      apt:
-        name:
-          - firefox-esr
-          - xauth
+    - name: Instalar Firefox, Xauth e autofs
+      ansible.builtin.apt:
+        name: [firefox-esr, xauth, autofs]
         state: present
         update_cache: true
-
-    # ─── 2. SSH X11 Forwarding ───
-    - name: Permitir exportação X11 no SSH
-      lineinfile:
-        path: /etc/ssh/ssh_config
-        regexp: '^#?\s*ForwardX11\s'
-        line: 'ForwardX11 yes'
-        state: present
-      notify: restart ssh
-
-    - name: Permitir X11Trusted no SSH
-      lineinfile:
-        path: /etc/ssh/ssh_config
-        regexp: '^#?\s*ForwardX11Trusted\s'
-        line: 'ForwardX11Trusted yes'
-        state: present
-      notify: restart ssh
-
-    # ─── 3. Autofs (NFS) ───
-    - name: Instalar autofs
-      apt:
+    - name: Permitir X11 forwarding no servidor SSH
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/02-ifpb-x11.conf
+        mode: '0644'
+        content: "X11Forwarding yes\nX11UseLocalhost yes\n"
+      notify: Recarregar SSH
+    - name: Configurar automontagem direta NFS em /var/nfs
+      ansible.builtin.copy:
+        dest: /etc/auto.master.d/ifpb.autofs
+        mode: '0644'
+        content: "/- /etc/auto.ifpb --timeout=60\n"
+      notify: Reiniciar autofs
+    - name: Configurar mapa de montagem NFS
+      ansible.builtin.copy:
+        dest: /etc/auto.ifpb
+        mode: '0644'
+        content: "/var/nfs -fstype=nfs,rw 192.168.56.104:/dados/nfs\n"
+      notify: Reiniciar autofs
+    - name: Ativar autofs
+      ansible.builtin.service:
         name: autofs
-        state: present
-
-    - name: Criar o diretório /var/nfs
-      file:
-        path: /var/nfs
-        state: directory
-        mode: '0755'
-
-    - name: Configurar o auto.master
-      copy:
-        dest: /etc/auto.master
-        content: |
-          /var/nfs /etc/auto.nfs --timeout=60
-
-    - name: Configurar o auto.nfs para montar a arq
-      copy:
-        dest: /etc/auto.nfs
-        content: |
-          dados -fstype=nfs4,rw 192.168.56.104:/dados/nfs
-
-    - name: Reiniciar o autofs
-      service:
-        name: autofs
-        state: restarted
-        enabled: yes
-
+        state: started
+        enabled: true
   handlers:
-    - name: restart ssh
-      service:
+    - name: Recarregar SSH
+      ansible.builtin.service:
         name: ssh
+        state: reloaded
+    - name: Reiniciar autofs
+      ansible.builtin.service:
+        name: autofs
         state: restarted

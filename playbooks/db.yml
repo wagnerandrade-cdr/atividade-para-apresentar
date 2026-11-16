@@ -1,48 +1,37 @@
 ---
-- name: Configuração do Banco de Dados (db)
+- name: Servidor db - MariaDB e NFS por autofs
   hosts: all
   become: true
-
   tasks:
-    # ─── 1. MariaDB ───
-    - name: Instalar o servidor MariaDB
-      apt:
-        name: mariadb-server
+    - name: Instalar MariaDB e autofs
+      ansible.builtin.apt:
+        name: [mariadb-server, autofs]
         state: present
         update_cache: true
-
-    - name: Habilitar e iniciar o MariaDB
-      service:
+    - name: Habilitar MariaDB
+      ansible.builtin.service:
         name: mariadb
         state: started
-        enabled: yes
-
-    # ─── 2. Autofs (NFS) ───
-    - name: Instalar autofs
-      apt:
+        enabled: true
+    - name: Configurar automontagem direta NFS em /var/nfs
+      ansible.builtin.copy:
+        dest: /etc/auto.master.d/ifpb.autofs
+        mode: '0644'
+        content: "/- /etc/auto.ifpb --timeout=60\n"
+      notify: Reiniciar autofs
+    - name: Configurar mapa de montagem NFS
+      ansible.builtin.copy:
+        dest: /etc/auto.ifpb
+        mode: '0644'
+        content: "/var/nfs -fstype=nfs,rw 192.168.56.104:/dados/nfs\n"
+      notify: Reiniciar autofs
+    - name: Ativar autofs
+      ansible.builtin.service:
         name: autofs
-        state: present
-
-    - name: Criar o diretório /var/nfs
-      file:
-        path: /var/nfs
-        state: directory
-        mode: '0755'
-
-    - name: Configurar o auto.master
-      copy:
-        dest: /etc/auto.master
-        content: |
-          /var/nfs /etc/auto.nfs --timeout=60
-
-    - name: Configurar o auto.nfs para montar a arq
-      copy:
-        dest: /etc/auto.nfs
-        content: |
-          dados -fstype=nfs4,rw 192.168.56.104:/dados/nfs
-
-    - name: Reiniciar o autofs
-      service:
+        state: started
+        enabled: true
+  handlers:
+    - name: Reiniciar autofs
+      ansible.builtin.service:
         name: autofs
         state: restarted
-        enabled: yes
