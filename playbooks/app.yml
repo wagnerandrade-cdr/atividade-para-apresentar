@@ -1,49 +1,57 @@
 ---
-- name: Servidor app - Apache e NFS por autofs
-  hosts: all
+- ansible.builtin.import_playbook: conf-geral.yml
+  vars:
+    alvo_comum: app
+    usar_dns_lab: true
+
+- name: Configurar o servidor de aplicação
+  hosts: app
   become: true
+  vars_files:
+    - vars-lab.yml
+
   tasks:
-    - name: Instalar Apache e autofs
+    - name: Instalar Apache
       ansible.builtin.apt:
-        name: [apache2, autofs]
-        state: present
-        update_cache: true
-    - name: Habilitar Apache
-      ansible.builtin.service:
         name: apache2
-        state: started
-        enabled: true
-    - name: Publicar pagina HTML exigida
+        state: present
+        lock_timeout: 180
+
+    - name: Publicar os dados do projeto
       ansible.builtin.copy:
         dest: /var/www/html/index.html
         mode: '0644'
         content: |
           <!doctype html>
-          <html lang="pt-br"><head><meta charset="utf-8"><title>Projeto DevOps IFPB</title></head>
-          <body><h1>Projeto 01 - DevOps com Vagrant e Ansible</h1>
-          <p>IFPB - Administracao de Sistemas Abertos - Professor Leonidas Lima</p>
-          <p>Wagner Marinho de Andrade Filho - 20242380004</p>
-          <p>Wilson Fillipe do Nascimento Lima - 20251380021</p>
-          </body></html>
-    - name: Configurar automontagem direta NFS em /var/nfs
-      ansible.builtin.copy:
-        dest: /etc/auto.master.d/ifpb.autofs
-        mode: '0644'
-        content: "/- /etc/auto.ifpb --timeout=60\n"
-      notify: Reiniciar autofs
-    - name: Configurar mapa de montagem NFS
-      ansible.builtin.copy:
-        dest: /etc/auto.ifpb
-        mode: '0644'
-        content: "/var/nfs -fstype=nfs,rw 192.168.56.104:/dados/nfs\n"
-      notify: Reiniciar autofs
-    - name: Ativar autofs
+          <html lang="pt-BR">
+          <head>
+            <meta charset="utf-8">
+            <title>Projeto 01 - DevOps com Vagrant e Ansible</title>
+          </head>
+          <body>
+            <h1>Projeto 01 - DevOps com Vagrant e Ansible</h1>
+            <p>O Vagrant cria quatro máquinas Debian e o Ansible configura a rede,
+            o armazenamento e os serviços de arquivos, banco de dados e aplicação.</p>
+            <p>Administração de Sistemas Abertos — IFPB</p>
+            <p>Professor Leonidas Francisco de Lima Junior</p>
+            <ul>
+              <li>Wagner Marinho de Andrade Filho — matrícula 20242380004</li>
+              <li>Wilson Fillipe do Nascimento Lima — matrícula 20251380021</li>
+            </ul>
+          </body>
+          </html>
+
+    - name: Habilitar e iniciar Apache
       ansible.builtin.service:
-        name: autofs
+        name: apache2
         state: started
         enabled: true
+
+    - name: Configurar a montagem automática do NFS
+      ansible.builtin.import_tasks: autofs.yml
+
   handlers:
-    - name: Reiniciar autofs
+    - name: Recarregar autofs
       ansible.builtin.service:
         name: autofs
-        state: restarted
+        state: reloaded

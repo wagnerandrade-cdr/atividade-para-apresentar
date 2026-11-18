@@ -1,134 +1,106 @@
-# Projeto DevOps — Vagrant e Ansible
+# Projeto 01 - DevOps com Vagrant e Ansible
 
-## 1. Sobre o projeto
+**Instituição** Instituto Federal da Paraíba (IFPB)  
+**Disciplina** Administração de Sistemas Abertos  
+**Professor** Leonidas Francisco de Lima Junior
 
-Projeto desenvolvido para a disciplina **Administração de Sistemas Abertos**, do IFPB, sob orientação do professor Leonidas Francisco de Lima Junior.
+- Wagner Marinho de Andrade Filho, matrícula `20242380004`
+- Wilson Fillipe do Nascimento Lima, matrícula `20251380021`
 
-**Integrantes:**
-- Wagner Marinho de Andrade Filho — 20242380004
-- Wilson Fillipe do Nascimento Lima — 20251380021
+O Vagrant cria quatro VMs Debian 12 no VirtualBox. O Ansible configura o sistema e os serviços de cada máquina.
 
-O objetivo é criar uma infraestrutura Linux automatizada utilizando **Vagrant, VirtualBox e Ansible**, aplicando conceitos de DevOps e Infraestrutura como Código (IaC).
-
-## 2. Infraestrutura
-
-Foram configuradas quatro máquinas virtuais Debian 12 na rede `192.168.56.0/24`.
-
-| Máquina | IP | Serviços |
+| VM | IP privado | Função |
 |---|---|---|
-| arq | 192.168.56.104 | DHCP, DNS, LVM e NFS |
-| db | 192.168.56.121 | MariaDB e Autofs |
-| app | 192.168.56.141 | Apache2 e Autofs |
-| cli | DHCP (.50–.100) | Firefox, X11 e Autofs |
+| `arq` | `192.168.56.104` | DHCP, DNS, LVM e servidor NFS |
+| `db` | `192.168.56.121`, reservado por MAC | MariaDB e cliente NFS |
+| `app` | `192.168.56.141`, reservado por MAC | Apache e cliente NFS |
+| `cli` | `192.168.56.50–100`, dinâmico | Firefox ESR, SSH com X11 e cliente NFS |
 
-O Vagrant cria as máquinas virtuais e configura seus recursos. O Ansible automatiza a instalação de serviços, usuários, permissões, SSH e sincronização de horário com Chrony.
+O final do IP de aplicação é `141` porque os últimos dígitos de Wagner e Wilson são `4` e `1`, nessa ordem. Os nomes usam o domínio `wagner.wilson.devops`.
 
-O servidor `arq` fornece DHCP e DNS, além de compartilhar arquivos via NFS. Os demais servidores acessam esse compartilhamento automaticamente utilizando Autofs.
+## Subir o projeto no notebook Linux
 
-## 3. Segurança SSH
+Use uma pasta no sistema de arquivos do Linux. Tenha Vagrant 2.3 ou superior compatível com sua versão do VirtualBox, Ansible Core 2.14 ou superior, OpenSSH e `flock` (do pacote `util-linux`). O hospedeiro e as VMs precisam de internet para obter a box, as coleções Ansible e os pacotes Debian.
 
-O acesso remoto utiliza autenticação por chaves SSH:
-
-1. As chaves são geradas no pc local com `preparar-chaves.sh`.
-2. As chaves privadas permanecem no pc local.
-3. O Ansible copia as chaves públicas para o `authorized_keys` dos usuários nas VMs.
-4. O SSH valida as chaves e permite o acesso sem senha de login.
-
-Também foram configurados o bloqueio de root e da autenticação por senha, acesso restrito aos grupos `vagrant` e `ifpb` e permissões sudo para o grupo `ifpb`.
-
-## 4. Instalação e execução
-
-**Pré-requisitos:** Linux, VirtualBox, Vagrant, Ansible, Python 3 e OpenSSH.
-
-Na pasta principal do projeto, execute:
-
-**1. Instalar as dependências do Ansible:**
+Execute o Vagrant como seu usuário normal a partir da pasta do projeto.
 
 ```bash
-ansible-galaxy collection install -r requirements.yml
+vagrant up
 ```
 
-**2. Gerar as chaves SSH:**
+Antes de subir as VMs, o `vagrant up` instala no hospedeiro as coleções de `requirements.yml`, reaproveitando as versões compatíveis já instaladas, e gera ou reaproveita as chaves `keys/wagner` e `keys/wilson`. As chaves privadas ficam no notebook. O Ansible lê cada arquivo `.pub` e instala a chave no `authorized_keys` do usuário correspondente nas quatro VMs. A opção `config.ssh.insert_key = false` mantém a configuração exigida no PDF para o usuário de provisionamento `vagrant`.
+
+O VirtualBox inicia `arq` primeiro, com IP estático, e o provisionamento deixa o DNS e o DHCP prontos antes da subida dos clientes. O gatilho da Prática 05 executa `VBoxManage dhcpserver stop --interface` na rede host-only ligada à VM antes de `WaitForCommunicator`, quando há um servidor DHCP do VirtualBox cadastrado nessa rede. O DHCP de `arq` anuncia a faixa `.50–.100`, o gateway `192.168.56.1`, o DNS `192.168.56.104` e os leases de 180 e 3600 segundos. A saída dos clientes à internet usa o adaptador NAT.
+
+Ao terminar a subida de cada VM, o Vagrant lê sua chave pública de identificação SSH pela conexão que ele gerencia e registra o nome completo no `~/.ssh/known_hosts` do usuário do hospedeiro. Isso prepara o SSH usado pelo script de verificação do professor. A resolução dos nomes no hospedeiro continua dependendo do DNS ou do `/etc/hosts`, conforme explicado abaixo.
+
+Se precisar selecionar uma interface host-only existente, confirme o nome e que ela usa `192.168.56.1/24` antes de exportar a variável.
 
 ```bash
-chmod +x preparar-chaves.sh
-./preparar-chaves.sh
+VBoxManage list hostonlyifs
+export LAB_HOSTONLY_IF=vboxnet0
 ```
 
-**3. Validar e iniciar as máquinas:**
+Se uma tentativa anterior falhou, extraia o ZIP atualizado na mesma pasta do projeto e preserve `.vagrant/` e `keys/`. Rode `vagrant up --provision` para reaproveitar as VMs já criadas e repetir a configuração. Se o `grub-pc` estiver parcialmente configurado, o playbook tenta concluir a configuração antes de instalar os serviços.
 
-```bash
-vagrant validate
-vagrant up arq
-vagrant up db app cli
-vagrant status
-```
+Por padrão, o provisionamento atualiza o índice APT e instala os pacotes dos serviços. O upgrade geral solicitado no enunciado ficou opcional, para que você possa validar o laboratório antes de rodá-lo. Para executar essa etapa depois, use `LAB_APT_UPGRADE=1 vagrant up --provision`.
 
-Antes de iniciar, confirme que o DHCP do VirtualBox está desativado na rede privada utilizada pelo projeto:
-
-```bash
-VBoxManage list dhcpservers
-```
-
-**4. Acessar uma máquina:**
+## Acessar por SSH e usar Ansible
 
 ```bash
 vagrant ssh arq
+ssh -i keys/wilson wilson@192.168.56.104
+ansible-inventory --graph
+ansible servidores -m ping
+ansible-playbook playbooks/db.yml --limit db
 ```
 
-Ou com a chave SSH:
+Para executar o inventário manualmente em `cli`, obtenha seu IP com `vagrant ssh cli -c 'ip -4 -br address'` e adicione-o ao grupo `[cli]` do `hosts.ini`. Para testar X11, use `ssh -X -i keys/wilson wilson@IP_DA_CLI` em uma sessão gráfica no notebook. Na VM, abra `firefox-esr`.
+
+O Bind9 resolve as zonas direta e reversa na rede privada e encaminha consultas externas a `1.1.1.1` e `8.8.8.8`. Os clientes usam o DNS de `arq`. Para testar o DNS diretamente a partir do notebook, use:
 
 ```bash
-ssh -i keys/wagner wagner@192.168.56.104
+dig @192.168.56.104 app.wagner.wilson.devops +short
+dig @192.168.56.104 -x 192.168.56.141 +short
 ```
 
-Para reexecutar as configurações após alterações:
+Se quiser abrir os nomes diretamente no navegador ou no SSH do notebook mesmo sem configurar o DNS do adaptador, adicione as seguintes linhas ao `/etc/hosts` do notebook.
+
+```text
+192.168.56.104 arq.wagner.wilson.devops arq
+192.168.56.121 db.wagner.wilson.devops db
+192.168.56.141 app.wagner.wilson.devops app
+```
+
+## Testar os serviços
 
 ```bash
-vagrant provision
+vagrant ssh db -c 'ip -4 -br address; sudo mariadb-admin ping'
+vagrant ssh app -c 'ip -4 -br address; systemctl is-active apache2'
+vagrant ssh cli -c 'ip -4 -br address; getent hosts arq.wagner.wilson.devops db.wagner.wilson.devops app.wagner.wilson.devops'
+vagrant ssh arq -c 'sudo dhcpd -t -cf /etc/dhcp/dhcpd.conf; sudo named-checkconf -z'
+vagrant ssh arq -c 'sudo pvs; sudo vgs; sudo lvs; findmnt /dados'
+curl -f http://192.168.56.141/
 ```
 
-## 5. Testes de funcionamento
-
-Verificar os principais serviços:
+Para testar a escrita via NFS, faça uma operação em `/var/nfs` na VM cliente e confira o proprietário no servidor. Os três clientes montam o compartilhamento diretamente em `/var/nfs` sob demanda. Todos os acessos remotos são mapeados para `nfs-ifpb` e o servidor usa gravação síncrona.
 
 ```bash
-vagrant ssh arq -c "sudo pvs; sudo vgs; sudo lvs"
-vagrant ssh arq -c "sudo exportfs -v"
-vagrant ssh db -c "systemctl is-active mariadb"
-vagrant ssh app -c "systemctl is-active apache2"
-vagrant ssh cli -c "ls /var/nfs"
+vagrant ssh cli -c 'touch /var/nfs/teste-cli.txt; findmnt -T /var/nfs/teste-cli.txt'
+vagrant ssh arq -c "stat -c '%U:%G %a %n' /dados/nfs/teste-cli.txt"
 ```
 
-Testar DNS e a página web:
+O arquivo deve pertencer a `nfs-ifpb:nfs-ifpb`. Os três discos adicionais de `arq` formam o VG `dados`. O LV `ifpb` tem 15 GiB, usa ext4 e é montado em `/dados` pelo `fstab`.
 
-```bash
-dig @192.168.56.104 app.wagner.wilson.devops
-curl http://192.168.56.141
-```
+Para desligar o laboratório, execute `vagrant halt`. Se precisar restaurar o DHCP do VirtualBox para outro uso depois de desligar as VMs, execute `VBoxManage dhcpserver start --interface vboxnet0` com o nome da interface em uso.
 
-### Verificador do professor
+## Arquivos
 
-Após configurar no notebook a resolução dos nomes `arq`, `app`, `db` e `cli` do domínio `wagner.wilson.devops`, execute na raiz do projeto:
-
-```bash
-python3 verificar.py wagner.wilson
-```
-
-Para salvar o resultado:
-
-```bash
-python3 verificar.py wagner.wilson 2>&1 | tee resultado-verificacao.txt
-```
-
-O script verifica SSH, usuários, Chrony, LVM, MariaDB, NFS e X11. Durante os testes, cria temporariamente um usuário `intruso` para conferir as restrições de acesso.
-
-## 6. Aplicações práticas
-
-O projeto demonstra a automação de servidores, gerenciamento de redes, compartilhamento de arquivos e segurança de acesso, conhecimentos aplicáveis em empresas, data centers, ambientes de desenvolvimento e infraestrutura em nuvem.
-
-**Conclusão:** a utilização conjunta de Vagrant e Ansible permite criar, configurar e reproduzir ambientes Linux de maneira padronizada, automatizada e segura.
-
----
-
-**IFPB — Administração de Sistemas Abertos — 2026.2**
+- `Vagrantfile` e `preparar-chaves.sh` definem a infraestrutura, o gatilho DHCP e a geração de chaves.
+- `registrar-host-ssh.sh` registra as identidades SSH públicas das VMs no hospedeiro.
+- `ansible.cfg`, `hosts.ini` e `requirements.yml` definem o inventário manual e as dependências.
+- `playbooks/conf-geral.yml` aplica APT, Chrony, fuso, grupo, usuários, SSH e sudo.
+- `playbooks/arq.yml` e `playbooks/conf-dhcp.yml` configuram LVM, NFS, DNS e DHCP no servidor de arquivos.
+- `playbooks/db.yml`, `playbooks/app.yml` e `playbooks/cli.yml` configuram os serviços das outras VMs e compartilham as tarefas de montagem em `playbooks/autofs.yml`.
+- `playbooks/vars-lab.yml` contém os endereços usados pelos playbooks.
+- `.gitignore` exclui as chaves e os arquivos locais do Vagrant.

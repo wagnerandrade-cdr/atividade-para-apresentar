@@ -1,26 +1,131 @@
 ---
-- name: Configuracao comum em todas as VMs
-  hosts: all
+- name: Configuração comum das VMs
+  hosts: "{{ alvo_comum | default('all') }}"
   become: true
+  vars_files:
+    - vars-lab.yml
   vars:
     integrantes: [wagner, wilson]
+    atualizar_pacotes: "{{ lookup('ansible.builtin.env', 'LAB_APT_UPGRADE') == '1' }}"
+
   tasks:
-    - name: Atualizar cache e fazer upgrade do sistema
+    - name: Usar o DNS interno nas máquinas clientes
+      when: usar_dns_lab | default(false) | bool
+      block:
+        - name: Manter o DNS do laboratório e a saída pela rede NAT nas renovações DHCP
+          ansible.builtin.copy:
+            dest: /etc/dhcp/dhclient-enter-hooks.d/devops
+            mode: '0755'
+            content: |
+              # O gateway host-only é anunciado pelo DHCP, mas a saída à internet usa NAT.
+              if [ -n "$new_ip_address" ]; then
+                  case "$new_ip_address" in
+                      192.168.56.*) new_routers='' ;;
+                  esac
+                  new_domain_search='{{ dominio }}'
+                  new_domain_name='{{ dominio }}'
+                  new_domain_name_servers='{{ ip_arq }}'
+              fi
+
+        - name: Verificar se o lease inicial instalou a rota padrão host-only
+          ansible.builtin.command: "ip -4 route show default via {{ gateway_lab }}"
+          register: rota_host_only
+          changed_when: false
+
+        - name: Remover a rota padrão host-only do lease inicial
+          ansible.builtin.command: "ip -4 route del default via {{ gateway_lab }}"
+          when: rota_host_only.stdout | length > 0
+
+        - name: Aplicar o DNS do laboratório ao lease atual
+          ansible.builtin.copy:
+            dest: /etc/resolv.conf
+            follow: true
+            mode: '0644'
+            content: |
+              search {{ dominio }}
+              nameserver {{ ip_arq }}
+
+    - name: Recuperar configuração pendente do GRUB, se houver
+      ansible.builtin.shell: |
+        set -eu
+
+        if [ -d /sys/firmware/efi ]; then
+            exit 0
+        fi
+        if status=$(dpkg-query -W -f='${db:Status-Status}' grub-pc); then
+            case "$status" in
+                half-configured|unpacked) ;;
+                installed) [ "$ATUALIZAR_PACOTES" = 1 ] || exit 0 ;;
+                *) exit 0 ;;
+            esac
+        else
+            rc=$?
+            if [ "$rc" -eq 1 ]; then
+                exit 0
+            fi
+            exit "$rc"
+        fi
+
+        # Os identificadores do disco da box podem mudar quando a VM é clonada.
+        dispositivo_boot=$(grub-probe --target=device /boot/grub)
+        dispositivos=$(lsblk --inverse --noheadings --raw --paths --output NAME,TYPE -- "$dispositivo_boot")
+        disco_boot=$(printf '%s\n' "$dispositivos" | awk '$2 == "disk" {print $1}' | sort -u)
+        if ! test -b "$disco_boot"; then
+            printf 'O GRUB precisa de um único disco válido para %s. Encontrado: %s\n' \
+                "$dispositivo_boot" "$disco_boot" >&2
+            exit 1
+        fi
+
+        destino_grub="$disco_boot"
+        for id in /dev/disk/by-id/*; do
+            if [ -L "$id" ] && [ "$(readlink -f "$id")" = "$disco_boot" ]; then
+                destino_grub="$id"
+                break
+            fi
+        done
+
+        atual=$(printf 'GET grub-pc/install_devices\n' | debconf-communicate grub-pc)
+        vazio=$(printf 'GET grub-pc/install_devices_empty\n' | debconf-communicate grub-pc)
+        if [ "$atual" != "0 $destino_grub" ] || [ "$vazio" != '0 false' ]; then
+            printf 'grub-pc grub-pc/install_devices multiselect %s\ngrub-pc grub-pc/install_devices_empty boolean false\n' \
+                "$destino_grub" | debconf-set-selections
+            printf 'GRUB atualizado para %s\n' "$destino_grub"
+        fi
+        if [ "$status" != installed ]; then
+            dpkg --configure --pending
+            printf 'Configuração pendente concluída\n'
+        fi
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        ATUALIZAR_PACOTES: "{{ '1' if atualizar_pacotes | bool else '0' }}"
+      register: ajuste_grub
+      changed_when: >-
+        'GRUB atualizado para ' in ajuste_grub.stdout or
+        'Configuração pendente concluída' in ajuste_grub.stdout
+
+    - name: Atualizar o índice de pacotes
       ansible.builtin.apt:
         update_cache: true
-        upgrade: dist
         cache_valid_time: 3600
-      retries: 3
-      delay: 10
+        lock_timeout: 180
       register: atualizacao
       until: atualizacao is succeeded
+      retries: 3
+      delay: 10
 
-    - name: Instalar pacotes comuns
+    - name: Executar o upgrade exigido pelo enunciado quando solicitado
       ansible.builtin.apt:
-        name: [chrony, nfs-common, sudo, openssh-server, python3]
-        state: present
+        upgrade: safe
+        lock_timeout: 180
+      when: atualizar_pacotes | bool
 
-    - name: Ajustar zona de tempo
+    - name: Instalar os pacotes comuns
+      ansible.builtin.apt:
+        name: [chrony, nfs-common, sudo, openssh-server]
+        state: present
+        lock_timeout: 180
+
+    - name: Ajustar o fuso horário
       community.general.timezone:
         name: America/Recife
 
@@ -34,58 +139,50 @@
           logdir /var/log/chrony
           makestep 1 3
           rtcsync
-      notify: Reiniciar chrony
+      notify: Reiniciar Chrony
 
-    - name: Garantir Chrony em execucao
+    - name: Habilitar e iniciar o Chrony
       ansible.builtin.service:
         name: chrony
         state: started
         enabled: true
 
-    - name: Criar grupo ifpb
+    - name: Criar o grupo ifpb
       ansible.builtin.group:
         name: ifpb
         state: present
 
-    - name: Criar integrantes e incluir no grupo ifpb
+    - name: Criar os usuários dos integrantes e incluir no grupo ifpb
       ansible.builtin.user:
-        name: '{{ item }}'
+        name: "{{ item }}"
         groups: ifpb
         append: true
-        create_home: true
         shell: /bin/bash
-      loop: '{{ integrantes }}'
-
-    - name: Confirmar existencia de chaves publicas no computador controlador
-      ansible.builtin.assert:
-        that: "lookup('ansible.builtin.fileglob', playbook_dir + '/../keys/' + item + '.pub') | length > 0"
-        fail_msg: 'Falta keys/{{ item }}.pub. Rode ./preparar-chaves.sh no notebook Linux ANTES de provisionar.'
-      loop: '{{ integrantes }}'
-      delegate_to: localhost
-      become: false
-
-    - name: Instalar chave publica do notebook no authorized_keys remoto
-      ansible.posix.authorized_key:
-        user: '{{ item }}'
-        key: "{{ lookup('ansible.builtin.file', playbook_dir + '/../keys/' + item + '.pub') }}"
+        create_home: true
         state: present
-        exclusive: true
-        manage_dir: true
-      loop: '{{ integrantes }}'
+      loop: "{{ integrantes }}"
 
-    - name: Instalar mensagem de acesso SSH
+    - name: Autorizar a chave pública gerada no hospedeiro
+      ansible.posix.authorized_key:
+        user: "{{ item }}"
+        key: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../keys/' ~ item ~ '.pub') }}"
+        state: present
+        manage_dir: true
+      loop: "{{ integrantes }}"
+
+    - name: Instalar o banner SSH
       ansible.builtin.copy:
         dest: /etc/ssh/banner_ifpb
         mode: '0644'
         content: "Acesso apenas para pessoas com autorização expressa!!!\n"
-      notify: Recarregar SSH
 
-    - name: Restringir acesso SSH a chaves e grupos autorizados
+    - name: Configurar a autenticação do servidor SSH
       ansible.builtin.copy:
         dest: /etc/ssh/sshd_config.d/01-ifpb.conf
         mode: '0644'
         content: |
           PubkeyAuthentication yes
+          AuthenticationMethods publickey
           PasswordAuthentication no
           KbdInteractiveAuthentication no
           PermitRootLogin no
@@ -93,22 +190,29 @@
           Banner /etc/ssh/banner_ifpb
       notify: Recarregar SSH
 
-    - name: Permitir sudo sem senha aos integrantes para testes automatizados
-      ansible.builtin.copy:
-        dest: /etc/sudoers.d/ifpb
-        mode: '0440'
-        validate: '/usr/sbin/visudo -cf %s'
-        content: "%ifpb ALL=(ALL:ALL) NOPASSWD: ALL\n"
+    - name: Remover o arquivo SSH da versão anterior
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/99-ifpb.conf
+        state: absent
+      notify: Recarregar SSH
 
-    - name: Verificar sintaxe SSH antes de aplicar
+    - name: Validar a configuração SSH
       ansible.builtin.command: /usr/sbin/sshd -t
       changed_when: false
 
+    - name: Permitir sudo ao grupo ifpb
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/ifpb
+        mode: '0440'
+        validate: /usr/sbin/visudo -cf %s
+        content: "%ifpb ALL=(ALL:ALL) NOPASSWD: ALL\n"
+
   handlers:
-    - name: Reiniciar chrony
+    - name: Reiniciar Chrony
       ansible.builtin.service:
         name: chrony
         state: restarted
+
     - name: Recarregar SSH
       ansible.builtin.service:
         name: ssh

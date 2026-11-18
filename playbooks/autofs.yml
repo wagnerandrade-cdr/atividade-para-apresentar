@@ -1,0 +1,41 @@
+---
+- name: Instalar autofs
+  ansible.builtin.apt:
+    name: autofs
+    state: present
+    lock_timeout: 180
+
+- name: Remover o mapa indireto da versão anterior
+  ansible.builtin.lineinfile:
+    path: /etc/auto.master
+    regexp: '^/var/nfs\s+/etc/auto\.nfs(\s|$)'
+    state: absent
+  notify: Recarregar autofs
+
+- name: Incluir os mapas adicionais na configuração do autofs
+  ansible.builtin.lineinfile:
+    path: /etc/auto.master
+    line: '+dir:/etc/auto.master.d'
+  notify: Recarregar autofs
+
+- name: Configurar a montagem direta sob demanda
+  ansible.builtin.copy:
+    dest: /etc/auto.master.d/devops.autofs
+    mode: '0644'
+    content: |
+      /- /etc/auto.nfs --timeout=60
+  notify: Recarregar autofs
+
+- name: Montar o compartilhamento diretamente em /var/nfs
+  ansible.builtin.copy:
+    dest: /etc/auto.nfs
+    mode: '0644'
+    content: |
+      /var/nfs -fstype=nfs4,rw {{ ip_arq }}:/dados/nfs
+  notify: Recarregar autofs
+
+- name: Habilitar e iniciar autofs
+  ansible.builtin.service:
+    name: autofs
+    state: started
+    enabled: true

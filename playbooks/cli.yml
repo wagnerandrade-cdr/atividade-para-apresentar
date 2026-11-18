@@ -1,42 +1,43 @@
 ---
-- name: Cliente cli - Firefox, X11 e NFS por autofs
-  hosts: all
+- ansible.builtin.import_playbook: conf-geral.yml
+  vars:
+    alvo_comum: cli
+    usar_dns_lab: true
+
+- name: Configurar o cliente
+  hosts: cli
   become: true
+  vars_files:
+    - vars-lab.yml
+
   tasks:
-    - name: Instalar Firefox, Xauth e autofs
+    - name: Instalar Firefox ESR e xauth
       ansible.builtin.apt:
-        name: [firefox-esr, xauth, autofs]
+        name: [firefox-esr, xauth]
         state: present
-        update_cache: true
-    - name: Permitir X11 forwarding no servidor SSH
+        lock_timeout: 180
+
+    - name: Habilitar encaminhamento X11 no servidor SSH
       ansible.builtin.copy:
-        dest: /etc/ssh/sshd_config.d/02-ifpb-x11.conf
+        dest: /etc/ssh/sshd_config.d/00-ifpb-x11.conf
         mode: '0644'
-        content: "X11Forwarding yes\nX11UseLocalhost yes\n"
+        content: "X11Forwarding yes\n"
       notify: Recarregar SSH
-    - name: Configurar automontagem direta NFS em /var/nfs
-      ansible.builtin.copy:
-        dest: /etc/auto.master.d/ifpb.autofs
-        mode: '0644'
-        content: "/- /etc/auto.ifpb --timeout=60\n"
-      notify: Reiniciar autofs
-    - name: Configurar mapa de montagem NFS
-      ansible.builtin.copy:
-        dest: /etc/auto.ifpb
-        mode: '0644'
-        content: "/var/nfs -fstype=nfs,rw 192.168.56.104:/dados/nfs\n"
-      notify: Reiniciar autofs
-    - name: Ativar autofs
+
+    - name: Validar a configuração SSH
+      ansible.builtin.command: /usr/sbin/sshd -t
+      changed_when: false
+
+    - name: Configurar a montagem automática do NFS
+      ansible.builtin.import_tasks: autofs.yml
+
+  handlers:
+    - name: Recarregar autofs
       ansible.builtin.service:
         name: autofs
-        state: started
-        enabled: true
-  handlers:
+        state: reloaded
+
     - name: Recarregar SSH
       ansible.builtin.service:
         name: ssh
         state: reloaded
-    - name: Reiniciar autofs
-      ansible.builtin.service:
-        name: autofs
-        state: restarted

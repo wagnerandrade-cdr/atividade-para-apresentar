@@ -1,37 +1,33 @@
 ---
-- name: Servidor db - MariaDB e NFS por autofs
-  hosts: all
+- ansible.builtin.import_playbook: conf-geral.yml
+  vars:
+    alvo_comum: db
+    usar_dns_lab: true
+
+- name: Configurar o servidor de banco de dados
+  hosts: db
   become: true
+  vars_files:
+    - vars-lab.yml
+
   tasks:
-    - name: Instalar MariaDB e autofs
+    - name: Instalar MariaDB
       ansible.builtin.apt:
-        name: [mariadb-server, autofs]
+        name: mariadb-server
         state: present
-        update_cache: true
-    - name: Habilitar MariaDB
+        lock_timeout: 180
+
+    - name: Habilitar e iniciar MariaDB
       ansible.builtin.service:
         name: mariadb
         state: started
         enabled: true
-    - name: Configurar automontagem direta NFS em /var/nfs
-      ansible.builtin.copy:
-        dest: /etc/auto.master.d/ifpb.autofs
-        mode: '0644'
-        content: "/- /etc/auto.ifpb --timeout=60\n"
-      notify: Reiniciar autofs
-    - name: Configurar mapa de montagem NFS
-      ansible.builtin.copy:
-        dest: /etc/auto.ifpb
-        mode: '0644'
-        content: "/var/nfs -fstype=nfs,rw 192.168.56.104:/dados/nfs\n"
-      notify: Reiniciar autofs
-    - name: Ativar autofs
-      ansible.builtin.service:
-        name: autofs
-        state: started
-        enabled: true
+
+    - name: Configurar a montagem automática do NFS
+      ansible.builtin.import_tasks: autofs.yml
+
   handlers:
-    - name: Reiniciar autofs
+    - name: Recarregar autofs
       ansible.builtin.service:
         name: autofs
-        state: restarted
+        state: reloaded

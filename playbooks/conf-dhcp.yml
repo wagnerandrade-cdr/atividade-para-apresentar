@@ -1,52 +1,90 @@
 ---
-- name: DHCP autoritativo na VM arq
-  hosts: all
+- name: Configurar DHCP autoritativo no servidor de arquivos
+  hosts: arq
   become: true
+  vars_files:
+    - vars-lab.yml
+
   tasks:
-    - name: Instalar servidor DHCP
+    - name: Localizar a interface com o IP privado de arq
+      ansible.builtin.set_fact:
+        interface_dhcp: "{{ item }}"
+      loop: "{{ ansible_facts.interfaces }}"
+      when: (ansible_facts[item].ipv4 | default({})).address | default('') == ip_arq
+
+    - name: Confirmar que a interface privada foi encontrada
+      ansible.builtin.assert:
+        that: interface_dhcp is defined
+        fail_msg: "Nenhuma interface possui o IP {{ ip_arq }}."
+
+    - name: Instalar o servidor DHCP
       ansible.builtin.apt:
         name: isc-dhcp-server
         state: present
+        policy_rc_d: 101
         update_cache: true
-    - name: Selecionar interface privada
+        cache_valid_time: 3600
+        lock_timeout: 180
+
+    - name: Atender apenas na interface privada
       ansible.builtin.copy:
         dest: /etc/default/isc-dhcp-server
         mode: '0644'
         content: |
-          INTERFACESv4="eth1"
+          INTERFACESv4="{{ interface_dhcp }}"
           INTERFACESv6=""
       notify: Reiniciar DHCP
-    - name: Escrever configuracao do DHCP
+
+    # O perfil AppArmor do dhcpd permite ler /etc/dhcp, não o diretório temporário do Ansible.
+    - name: Preparar a faixa dinâmica e as reservas DHCP
       ansible.builtin.copy:
-        dest: /etc/dhcp/dhcpd.conf
+        dest: /etc/dhcp/dhcpd.conf.devops
         mode: '0644'
         content: |
-          authoritative;
           default-lease-time 180;
           max-lease-time 3600;
-          option domain-name "wagner.wilson.devops";
-          option domain-name-servers 192.168.56.104;
+          ddns-update-style none;
+          authoritative;
+          option domain-name "{{ dominio }}";
+          option domain-search "{{ dominio }}";
+          option domain-name-servers {{ ip_arq }};
+
           subnet 192.168.56.0 netmask 255.255.255.0 {
             range 192.168.56.50 192.168.56.100;
-            option routers 192.168.56.1;
+            option routers {{ gateway_lab }};
           }
+
           host db {
-            hardware ethernet 08:00:27:3A:00:DB;
-            fixed-address 192.168.56.121;
+            hardware ethernet {{ mac_db }};
+            fixed-address {{ ip_db }};
           }
+
           host app {
-            hardware ethernet 08:00:27:3A:00:A1;
-            fixed-address 192.168.56.141;
+            hardware ethernet {{ mac_app }};
+            fixed-address {{ ip_app }};
           }
-      notify: Reiniciar DHCP
-    - name: Validar arquivo DHCP instalado
-      ansible.builtin.command: /usr/sbin/dhcpd -t -cf /etc/dhcp/dhcpd.conf
+
+    - name: Validar a configuração DHCP dentro de /etc/dhcp
+      ansible.builtin.command: /usr/sbin/dhcpd -t -cf /etc/dhcp/dhcpd.conf.devops
       changed_when: false
-    - name: Ativar servidor DHCP
+
+    - name: Aplicar a configuração DHCP validada
+      ansible.builtin.copy:
+        src: /etc/dhcp/dhcpd.conf.devops
+        dest: /etc/dhcp/dhcpd.conf
+        remote_src: true
+        mode: preserve
+      notify: Reiniciar DHCP
+
+    - name: Aplicar a configuração antes de inicializar os clientes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Habilitar e iniciar o DHCP
       ansible.builtin.service:
         name: isc-dhcp-server
         state: started
         enabled: true
+
   handlers:
     - name: Reiniciar DHCP
       ansible.builtin.service:
